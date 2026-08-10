@@ -1,0 +1,27 @@
+/*
+ * Tailwind v4 : une seule ligne d'import, pas de fichier tailwind.config.js.
+ * Les quelques réglages globaux se font juste en dessous.
+ */
+@import 'tailwindcss';
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-zinc-950 text-zinc-100 antialiased;
+  }
+
+  /* Barre de défilement discrète, pour rester sobre. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-zinc-700;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+}

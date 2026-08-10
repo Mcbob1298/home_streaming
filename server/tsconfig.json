@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    /*
+     * "NodeNext" = on écrit du vrai ESM Node.
+     * Conséquence visible : les imports relatifs se terminent par ".js"
+     * même si le fichier source est un ".ts". C'est normal, TypeScript
+     * n'ajoute pas d'extension à la compilation, il faut donc écrire
+     * celle du fichier généré.
+     */
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "sourceMap": true
+  },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}

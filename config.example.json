@@ -1,0 +1,23 @@
+{
+  "databasePath": "./data/media.db",
+  "libraries": [
+    {
+      "id": "films",
+      "label": "Films",
+      "type": "movie",
+      "paths": [
+        "\\\\NASSSITO\\Plex S1\\Vidéos\\films",
+        "\\\\NASSSITO\\plex\\Media\\Films"
+      ]
+    },
+    {
+      "id": "series",
+      "label": "Séries",
+      "type": "show",
+      "paths": [
+        "\\\\NASSSITO\\Plex S1\\Vidéos\\séries",
+        "\\\\NASSSITO\\plex\\Media\\Séries"
+      ]
+    }
+  ]
+}

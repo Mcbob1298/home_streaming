@@ -1,0 +1,16 @@
+node_modules/
+dist/
+
+# Configuration réelle : contient les chemins du NAS, propre à chaque machine.
+config.json
+
+# Secrets (jeton TMDB…). Voir .env.example pour la liste des variables.
+.env
+.env.local
+
+# Base SQLite, rapports de scan, affiches téléchargées. Toujours en local.
+data/
+
+# Réglages Claude Code propres à la machine (chemins absolus).
+# .claude/settings.json, lui, est partagé et versionné.
+.claude/settings.local.json
