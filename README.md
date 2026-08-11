@@ -34,6 +34,9 @@ Puis ouvrez http://localhost:5173.
 | `npm run probe` | Sonde les fichiers avec ffprobe (codecs, définition, durée, pistes)       |
 | `npm run metadata` | Apparie avec TMDB et télécharge les affiches                          |
 | `npm run cleanup` | Supprime les œuvres sans fichier et les images inutilisées             |
+| `npm run playable` | **Temporaire** — liste les fichiers lisibles sans transcodage          |
+| `npm run keyframes` | Indexe les images clés, nécessaire au découpage HLS du remux          |
+| `npm run migrate-paths` | Réécrit les chemins d'une racine à l'autre (Windows → NAS)        |
 | `npm test`      | Tests unitaires du parser                                                |
 | `npm run build` | Compile le serveur (`server/dist`) et l'interface (`web/dist`)           |
 | `npm start`     | Lance le serveur compilé, qui sert aussi l'interface si elle est buildée  |
@@ -387,6 +390,9 @@ Pagination : 50 éléments par page.
 | `GET /api/movies/:id`                                         | film, crédits, synthèse fichiers            |
 | `GET /api/shows?search=&library=&genre=&sort=&order=&page=`   | page de séries                              |
 | `GET /api/shows/:id`                                          | série, saisons, épisodes, crédits, synthèse |
+| `GET /api/stream/:mediaFileId`                                | le fichier, en flux, avec plages d'octets   |
+| `GET /api/stream/:mediaFileId/playability`                    | décision de lecture et contexte du lecteur  |
+| `GET /api/subtitles/:subtitleId`                              | sous-titre converti en WebVTT               |
 
 - `sort` : `title` (défaut), `year`, `added`. `order` : `asc` / `desc` — par
   défaut croissant pour le titre, décroissant pour l'année et la date d'ajout.
@@ -418,10 +424,245 @@ Pagination : 50 éléments par page.
   date, genre, classification / réalisation, distribution), et seulement
   ensuite une section « Fichier » avec les codecs et les emplacements.
 
+- **Lecteur** (`/watch/:mediaFileId`) : plein écran, fond noir, contrôles
+  personnalisés. Raccourcis : espace ou K lecture/pause, ←/→ et J/L ±10 s, ↑/↓
+  volume, M couper le son, F plein écran, Échap quitter, 0-9 pour aller au
+  pourcentage correspondant.
+
 Genre, tri, page et terme de recherche vivent **dans l'URL**, pas dans un état
 React : un lien se partage, et le bouton « précédent » refait la vue attendue.
 La recherche **remplace** son entrée d'historique plutôt que de l'empiler, sinon
 « précédent » rejouerait la requête lettre par lettre.
+
+---
+
+## Lecture
+
+**Cette étape ne lit que ce qui part tel quel dans un navigateur** : conteneur
+MP4/M4V, vidéo H.264, audio AAC. Cela fait **143 fichiers sur 2796**. Le remux et
+le transcodage viendront ensuite ; d'ici là, ouvrir un fichier non lisible
+affiche pourquoi il ne l'est pas, avec ses codecs.
+
+Le rapport ffprobe en annonce 144 : il ne regarde que l'extension, alors que la
+décision de lecture regarde aussi le conteneur réel vu par ffprobe. Un fichier
+de la bibliothèque est un flux de transport MPEG renommé `.mp4` — l'extension
+dit MP4, le contenu dit autre chose, et aucun navigateur ne sait le lire.
+
+### Une source n'est pas un fichier
+
+`/api/stream/:id/playability` décrit une **source**, jamais un chemin, et cette
+source porte toujours son type explicite :
+
+```json
+{ "mode": "direct", "source": { "url": "/api/stream/1004", "type": "file" } }
+```
+
+Rien dans le code ne déduit la nature d'une source de son extension. C'est ce
+qui permettra, à terme, de démarrer la lecture sur une amorce pré-transcodée de
+quelques secondes pendant que ffmpeg produit la suite : `type` vaudra `hls`, et
+le seul endroit à changer sera `attachSource` dans
+[`VideoSurface.tsx`](web/src/components/player/VideoSurface.tsx) — pas la barre
+de contrôle, pas les raccourcis, pas les états de chargement.
+
+### Requêtes de plage
+
+`/api/stream/:id` implémente `Range` (RFC 7233) : c'est ce qui permet de se
+déplacer dans une vidéo sans la télécharger en entier. Plages fermées, ouvertes
+et suffixes donnent un **206**, une plage hors du fichier un **416** avec la
+taille réelle, et un en-tête illisible est **ignoré** — la RFC l'impose — donc
+un 200 avec le fichier entier. `ETag` (taille + date) et `Last-Modified`
+permettent un **304**.
+
+Le flux est détruit dès que le client se déconnecte. Sans cela, chaque
+déplacement du curseur — le navigateur abandonne sa plage et en demande une
+autre — laisserait un descripteur ouvert sur le partage SMB.
+
+### Remux HLS — la vidéo est copiée, jamais réencodée
+
+59,3 % de la bibliothèque est **déjà en H.264** : seul le conteneur, et parfois
+l'audio, empêchent la lecture. Ces fichiers passent par un **remux** — `-c:v
+copy`, audio réencodé en AAC — servi en HLS avec des segments fMP4. Mesuré à
+**×24 à ×39 le temps réel** pour **66 à 85 % d'un cœur**. Direct + remux =
+**1803 fichiers sur 2796, soit 64,5 %**.
+
+Ne jamais réencoder une vidéo déjà en H.264 : c'est la différence entre quelques
+secondes et plusieurs minutes par fichier.
+
+### Le découpage suit les images clés, pas une horloge
+
+**Le piège de cette étape.** En copie de flux, ffmpeg ne peut couper qu'aux
+images clés existantes. Sur cette bibliothèque leur espacement va de 1 à 12
+secondes, et varie **à l'intérieur d'un même fichier** — 10 s, puis 2,2 s, puis
+4,7 s sur un même film. Un manifeste annonçant des segments de 4 secondes
+décrirait donc une découpe que ffmpeg ne produira jamais : le lecteur réclame un
+segment 14 qui n'existera pas, et attend jusqu'à expiration.
+
+Le manifeste est donc calqué sur les images clés **réelles**, énumérées par
+ffprobe et mises en cache dans `keyframe_index`. `planFromKeyframes` reproduit
+exactement la règle du muxer HLS : nouveau segment à la première image clé
+atteignant « début courant + hls_time ». Toute modification de cette fonction
+doit être vérifiée contre la sortie réelle de ffmpeg.
+
+Deux conséquences pratiques :
+
+- Les « trois premiers segments de 2 secondes » sont une **intention**. Sur un
+  fichier dont les images clés sont espacées de 10 s, le premier segment en fera
+  10. Ce sera exact au palier suivant, où la vidéo est réencodée et où les images
+  clés se placent où l'on veut.
+- L'énumération lit le fichier en entier une fois. Elle coûte **2,3 s** sur un
+  film de 1 h 56 déjà en cache système, contre 193 s si l'on passe par les
+  images décodées plutôt que par les paquets — d'où `packet=pts_time,flags`.
+  D'où aussi `npm run keyframes`, qui fait le travail hors ligne.
+
+### Sessions ffmpeg
+
+Un processus par fichier, trois au maximum (`transcode.maxSessions`), les
+demandes au-delà attendent leur tour. Le déplacement au-delà de ce qui est
+produit **relance ffmpeg à la position visée** plutôt que d'attendre : mesuré à
+**400 à 640 ms** pour sauter n'importe où dans un film de deux heures.
+
+**Un ffmpeg orphelin est le pire défaut possible ici**, d'où trois filets :
+le lecteur prévient qu'il quitte la page, un balayage tue les sessions inactives
+(`transcode.idleSeconds`), et l'arrêt du serveur tue le reste et vide le
+répertoire de travail. Vérifié : zéro processus survivant après fermeture.
+
+`transcode.workDir` est effaçable en totalité — en production ce sera un tmpfs.
+
+### Repérage temporaire
+
+Les 143 fichiers lisibles sont éparpillés dans la bibliothèque, ce qui rend les
+essais pénibles. Trois aides, **toutes temporaires** et marquées comme telles
+dans le code : le filtre `?playable=direct` sur `/api/movies` et `/api/shows`,
+une pastille « Lisible » sur les vignettes concernées, et `npm run playable`.
+Elles disparaîtront ensemble quand le transcodage rendra tout lisible.
+
+---
+
+## Déploiement
+
+Le serveur tourne **sur le NAS**, en conteneur. L'interface, elle, peut rester
+sur le poste de développement et proxier vers lui.
+
+La raison est mesurable : le poste est en Wi-Fi et lit le NAS à **11 Mo/s**.
+Toute mesure de transcodage faite depuis le poste mesure le réseau, pas le
+matériel. Et l'accélération QuickSync n'existe que sur le NAS.
+
+### Prérequis sur le NAS
+
+- Docker, avec `sudo` (l'utilisateur n'est pas dans le groupe `docker`).
+- `/dev/dri/renderD128` présent.
+- Le Node 18 du système n'est **pas** utilisé : il n'a pas npm et n'est plus
+  maintenu. Tout passe par le conteneur.
+
+L'utilisateur SSH est `Mathias Cassonnet` — **le nom contient un espace**. Il
+doit être protégé par des guillemets dans chaque commande :
+
+```bash
+ssh "Mathias Cassonnet@192.168.1.15"
+scp -r ./x "Mathias Cassonnet@192.168.1.15:/volume1/docker/home_streaming/"
+```
+
+Le code vit sous `/volume1/docker/home_streaming`, **pas** dans le home de
+l'utilisateur : son chemin contient l'espace, et chaque script devrait le
+protéger.
+
+### Deux modes
+
+|  | Production | Développement |
+| --- | --- | --- |
+| Fichier | `compose.yaml` | `compose.dev.yaml` |
+| Cible d'image | `runtime` | `dev` |
+| Source | copiée et compilée dans l'image | **montée en volume**, `tsx watch` |
+| Interface | servie par Fastify | servie par Vite sur le poste |
+| Port | 3000 | 3001 |
+| Après un changement de code | reconstruire l'image | rien, le serveur redémarre seul |
+| Après un changement de `package.json` | reconstruire | reconstruire |
+
+```bash
+# production
+sudo docker compose up -d --build
+
+# développement
+sudo docker compose -f compose.dev.yaml up -d --build
+sudo docker compose -f compose.dev.yaml logs -f
+```
+
+Le groupe du nœud de rendu doit être ajusté dans les deux fichiers :
+
+```bash
+stat -c '%g' /dev/dri/renderD128   # reporter cette valeur dans group_add
+```
+
+### Interface depuis le poste
+
+```bash
+echo "VITE_API_TARGET=http://192.168.1.15:3001" > web/.env.local
+npm --prefix web run dev
+```
+
+Sans cette variable, Vite continue de viser `127.0.0.1:3000` — le comportement
+d'avant, utile si le serveur tourne aussi sur le poste.
+
+### Deux configurations qui coexistent
+
+`config.json` porte les chemins Windows, `config.production.json` les chemins
+Linux. C'est `HOME_STREAMING_CONFIG` qui désigne le bon, et le conteneur le
+pointe sur le second. Aucun des deux n'écrase l'autre au transfert.
+
+### Correspondance des chemins
+
+| En base (Windows) | Sur le NAS |
+| --- | --- |
+| `\\NASSSITO\Plex S1\Vidéos\films` | `/mnt/@usb/sdb1/Vidéos/films` |
+| `\\NASSSITO\Plex S1\Vidéos\séries` | `/mnt/@usb/sdb1/Vidéos/séries` |
+| `\\NASSSITO\plex\Media\Films` | `/volume1/plex/Media/Films` |
+| `\\NASSSITO\plex\Media\Séries` | `/volume1/plex/Media/Séries` |
+
+Les montages du conteneur reprennent **les mêmes chemins des deux côtés** :
+la base migrée y désigne donc les fichiers sans traduction supplémentaire.
+
+### Migration des chemins
+
+**Ne pas rescanner.** Un scan complet reconstruirait l'index mais perdrait les
+62 appariements TMDB validés à la main et les entrées ignorées : ces décisions
+vivent dans `tmdb_match`, rattachées à des œuvres dont les identifiants
+changeraient. Elles ne sont pas reproductibles.
+
+La commande est **en simulation par défaut**, et vérifie l'existence des
+fichiers dans les deux modes — on sait donc si la migration va marcher avant
+d'écrire quoi que ce soit.
+
+```bash
+# 1. simulation, depuis le conteneur (le NAS voit les fichiers, pas le poste)
+sudo docker compose -f compose.dev.yaml exec home-streaming-dev \
+  npm run migrate-paths -- \
+    "--map=\\\\NASSSITO\\Plex S1\\Vidéos\\films=>/mnt/@usb/sdb1/Vidéos/films" \
+    "--map=\\\\NASSSITO\\Plex S1\\Vidéos\\séries=>/mnt/@usb/sdb1/Vidéos/séries" \
+    "--map=\\\\NASSSITO\\plex\\Media\\Films=>/volume1/plex/Media/Films" \
+    "--map=\\\\NASSSITO\\plex\\Media\\Séries=>/volume1/plex/Media/Séries"
+
+# 2. si « introuvables sur disque » vaut 0, appliquer
+#    (mêmes --map, plus --apply)
+```
+
+Le rapport donne les lignes réécrites par table, la répartition par racine, les
+chemins sans correspondance, le nombre de fichiers introuvables, et les
+comptes de la base après migration.
+
+**Revenir en arrière** : la commande écrit d'abord une sauvegarde
+`media.db.avant-migration-<horodatage>`, produite par `VACUUM INTO` — un fichier
+SQLite complet et cohérent, pas une copie partielle. Il suffit de la remettre en
+place. À défaut, rejouer la migration avec les correspondances inversées.
+
+La commande est **rejouable** : un chemin déjà migré est reconnu et laissé tel
+quel.
+
+### Normalisation NFC
+
+Le code qui distingue `path` (NFC, pour les comparaisons) de `raw_path` (exact,
+pour le disque) reste en place et fonctionne des deux côtés. Linux ne recompose
+pas les noms, donc les deux formes y coïncident le plus souvent — mais rien ne
+le garantit sur un partage monté, et le code n'a aucune raison d'être retiré.
 
 ---
 

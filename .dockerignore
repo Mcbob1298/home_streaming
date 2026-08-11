@@ -1,0 +1,29 @@
+# Rien de tout cela n'a sa place dans l'image.
+
+# Dépendances : réinstallées dans le conteneur, et celles du poste Windows
+# contiennent des binaires natifs compilés pour le mauvais système.
+node_modules
+**/node_modules
+
+# Base SQLite, affiches, rapports, segments : montés en volume, jamais copiés.
+data
+
+# Secrets. Le jeton TMDB passe par l'environnement du conteneur.
+.env
+.env.local
+
+# Configuration du poste de développement (chemins UNC Windows).
+# config.production.json, lui, est monté en volume.
+config.json
+
+# Produits de compilation locaux : l'image reconstruit les siens.
+server/dist
+
+# Outillage, historique et notes.
+.git
+.gitignore
+.claude
+docs
+IDEAS.md
+**/*.test.ts
+**/vitest.config.*

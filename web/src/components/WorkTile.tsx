@@ -24,6 +24,24 @@ interface TileOptions {
   withBadge?: boolean;
 }
 
+/* ===========================================================================
+ * TEMPORAIRE — pastille des œuvres directement lisibles
+ *
+ * 143 fichiers sur 2796 partent tels quels dans un navigateur, éparpillés dans
+ * la bibliothèque : sans repère, essayer le lecteur revient à cliquer au
+ * hasard. La pastille l'emporte sur « Nouveau » et « Terminée » tant que dure
+ * la mise au point.
+ *
+ * ELLE DISPARAÎT avec le filtre `?playable=direct` et « npm run playable »,
+ * quand le transcodage rendra la bibliothèque entièrement lisible.
+ * ======================================================================== */
+const PLAYABLE_BADGE = 'Lisible';
+
+function playableBadge(playableFileCount: number): string | null {
+  return playableFileCount > 0 ? PLAYABLE_BADGE : null;
+}
+/* ==================== fin du bloc temporaire ============================ */
+
 export function MovieTile({ movie, fluid, withBadge }: TileOptions & { movie: MovieSummary }) {
   const queryClient = useQueryClient();
 
@@ -42,7 +60,11 @@ export function MovieTile({ movie, fluid, withBadge }: TileOptions & { movie: Mo
       year={movie.year}
       genres={movie.genres}
       runtimeMinutes={movie.runtime}
-      badge={withBadge === true && isNew(movie.addedAt) ? 'Nouveau' : null}
+      badge={
+        withBadge !== true
+          ? null
+          : (playableBadge(movie.playableFileCount) ?? (isNew(movie.addedAt) ? 'Nouveau' : null))
+      }
       onPrefetch={() =>
         void queryClient.prefetchQuery({
           queryKey: ['movie', String(movie.id)],
@@ -57,14 +79,16 @@ export function ShowTile({ show, fluid, withBadge }: TileOptions & { show: ShowS
   const queryClient = useQueryClient();
 
   // « Nouveau » l'emporte sur « Terminée » : c'est l'information la plus utile.
+  // « Lisible » l'emporte sur les deux, le temps de la mise au point du lecteur.
   const badge =
     withBadge !== true
       ? null
-      : isNew(show.addedAt)
-        ? 'Nouveau'
-        : show.status === 'Ended' || show.status === 'Canceled'
-          ? 'Terminée'
-          : null;
+      : (playableBadge(show.playableFileCount) ??
+        (isNew(show.addedAt)
+          ? 'Nouveau'
+          : show.status === 'Ended' || show.status === 'Canceled'
+            ? 'Terminée'
+            : null));
 
   return (
     <MediaTile

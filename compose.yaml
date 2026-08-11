@@ -1,0 +1,82 @@
+# ==============================================================================
+# Serveur média personnel — production sur le NAS
+#
+# À coller dans Portainer, ou à lancer par :
+#   cd /volume1/docker/home_streaming
+#   sudo docker compose up -d --build
+#
+# Calqué sur la configuration Plex de la machine : mêmes identifiants, même
+# accès au rendu matériel, mêmes montages en lecture seule.
+# ==============================================================================
+
+services:
+  home-streaming:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: home-streaming:latest
+    container_name: home-streaming
+    restart: unless-stopped
+
+    # Le moteur QuickSync. Sans ce périphérique, le transcodage matériel du
+    # palier suivant retombe sur le processeur, des dizaines de fois plus lent.
+    devices:
+      - /dev/dri:/dev/dri
+
+    # L'identité est posée ici, pas par des variables PUID/PGID : une image Node
+    # ordinaire n'a pas d'entrypoint qui les interprète, elles ne feraient rien.
+    # 1000:10 — mêmes valeurs que Plex, donc mêmes droits sur les médias.
+    user: "1000:10"
+
+    # Le nœud de rendu appartient au groupe « render » de l'hôte, dont
+    # l'identifiant n'est ni 1000 ni 10. Sans cet ajout, /dev/dri/renderD128
+    # est visible mais illisible.
+    # Vérifié sur la machine : render = 105, /dev/dri/renderD128 est en root:render 660.
+    group_add:
+      - "105"
+
+    environment:
+      TZ: Europe/Paris
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      HOME_STREAMING_CONFIG: /app/config.production.json
+      # Jeton TMDB, seulement nécessaire à l'écran de review et aux passes de
+      # métadonnées. Renseigné dans un fichier .env à côté de ce compose.
+      TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      # --- Configuration -----------------------------------------------------
+      - /volume1/docker/home_streaming/config.production.json:/app/config.production.json:ro
+
+      # --- Données persistantes ---------------------------------------------
+      # Base SQLite, affiches, index des images clés, rapports. Sur /volume1,
+      # donc sur le stockage interne : la base ne doit JAMAIS vivre sur un
+      # partage réseau, le verrouillage de fichiers y est une source connue de
+      # corruption.
+      - /volume1/docker/home_streaming/data:/app/data
+
+      # --- Médias, en LECTURE SEULE -----------------------------------------
+      # Le serveur ne modifie jamais un fichier média. Le dire au noyau évite
+      # qu'un bogue ne puisse le faire.
+      - /mnt/@usb/sdb1/Vidéos/films:/mnt/@usb/sdb1/Vidéos/films:ro
+      - /mnt/@usb/sdb1/Vidéos/séries:/mnt/@usb/sdb1/Vidéos/séries:ro
+      - /volume1/plex/Media/Films:/volume1/plex/Media/Films:ro
+      - /volume1/plex/Media/Séries:/volume1/plex/Media/Séries:ro
+
+    # Segments des sessions de transcodage. En mémoire : ils sont écrits et
+    # relus sans arrêt, et n'ont aucune raison de survivre à un redémarrage.
+    #
+    # 1 Go. La machine a 7,5 Go dont 3,8 libres, et Plex en réserve déjà 4.
+    tmpfs:
+      - /app/data/transcode:rw,size=1g,mode=1777
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/libraries').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

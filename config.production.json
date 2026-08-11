@@ -1,0 +1,28 @@
+{
+  "//": "Configuration du NAS. Le poste de développement garde config.json, avec ses chemins Windows. C'est HOME_STREAMING_CONFIG qui désigne le bon fichier : les deux coexistent dans le dépôt sans jamais s'écraser.",
+
+  "databasePath": "./data/media.db",
+  "imagesPath": "./data/images",
+
+  "transcode": {
+    "//": "Répertoire de travail des sessions ffmpeg. Monté en tmpfs par le compose : écrit et relu sans arrêt, et sans aucune raison de survivre à un redémarrage.",
+    "workDir": "./data/transcode",
+    "maxSessions": 3,
+    "idleSeconds": 60
+  },
+
+  "libraries": [
+    {
+      "id": "films",
+      "label": "Films",
+      "type": "movie",
+      "paths": ["/mnt/@usb/sdb1/Vidéos/films", "/volume1/plex/Media/Films"]
+    },
+    {
+      "id": "series",
+      "label": "Séries",
+      "type": "show",
+      "paths": ["/mnt/@usb/sdb1/Vidéos/séries", "/volume1/plex/Media/Séries"]
+    }
+  ]
+}

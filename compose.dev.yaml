@@ -1,0 +1,64 @@
+# ==============================================================================
+# Serveur média personnel — DÉVELOPPEMENT sur le NAS
+#
+#   cd /volume1/docker/home_streaming
+#   sudo docker compose -f compose.dev.yaml up -d --build
+#
+# Différence avec la production :
+#   • la source est MONTÉE, pas copiée — modifier un fichier redémarre le
+#     serveur en une seconde, sans reconstruire l'image ;
+#   • l'interface n'est PAS servie ici : elle tourne sur le poste, en Vite, et
+#     proxie vers cette API (voir web/vite.config.ts et VITE_API_TARGET) ;
+#   • le port diffère, pour que les deux puissent tourner côte à côte.
+#
+# Reconstruire l'image reste nécessaire après un changement de package.json :
+# les dépendances viennent de l'image, pas du volume.
+# ==============================================================================
+
+services:
+  home-streaming-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+    image: home-streaming:dev
+    container_name: home-streaming-dev
+    restart: unless-stopped
+
+    devices:
+      - /dev/dri:/dev/dri
+
+    user: "1000:10"
+
+    # Vérifié sur la machine : render = 105, /dev/dri/renderD128 est en root:render 660.
+    group_add:
+      - "105"
+
+    environment:
+      TZ: Europe/Paris
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 3000
+      HOME_STREAMING_CONFIG: /app/config.production.json
+      TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
+
+    ports:
+      - "3001:3000"
+
+    volumes:
+      # --- La source, montée en direct --------------------------------------
+      # C'est tout l'intérêt du mode développement : tsx surveille ce dossier.
+      - ./server/src:/app/server/src:ro
+
+      # --- Configuration et données -----------------------------------------
+      - ./config.production.json:/app/config.production.json:ro
+      - ./data:/app/data
+
+      # --- Médias, en lecture seule -----------------------------------------
+      - /mnt/@usb/sdb1/Vidéos/films:/mnt/@usb/sdb1/Vidéos/films:ro
+      - /mnt/@usb/sdb1/Vidéos/séries:/mnt/@usb/sdb1/Vidéos/séries:ro
+      - /volume1/plex/Media/Films:/volume1/plex/Media/Films:ro
+      - /volume1/plex/Media/Séries:/volume1/plex/Media/Séries:ro
+
+    tmpfs:
+      - /app/data/transcode:rw,size=1g,mode=1777

@@ -41,6 +41,8 @@ export interface MovieSummary {
   /** Synopsis, tronqué à l'affichage dans le hero. */
   overview: string | null;
   fileCount: number;
+  /** TEMPORAIRE — nombre de fichiers lisibles sans transcodage. Voir ListParams. */
+  playableFileCount: number;
 }
 
 export interface ShowSummary {
@@ -61,6 +63,8 @@ export interface ShowSummary {
   overview: string | null;
   seasonCount: number;
   episodeCount: number;
+  /** TEMPORAIRE — nombre d'épisodes lisibles sans transcodage. Voir ListParams. */
+  playableFileCount: number;
 }
 
 export interface SubtitleInfo {
@@ -184,6 +188,10 @@ export interface EpisodeSummary {
   airDate: string | null;
   runtime: number | null;
   fileCount: number;
+  /** Fichier à ouvrir au clic sur « Lire ». */
+  mediaFileId: number;
+  /** TEMPORAIRE — 1 si l'épisode part tel quel dans un navigateur. */
+  playableDirect: number;
 }
 
 export interface SeasonDetail {
@@ -228,6 +236,67 @@ export interface Genre {
   showCount: number;
 }
 
+// ---------------------------------------------------------------------------
+// Lecture
+// ---------------------------------------------------------------------------
+
+/**
+ * `remux` et `transcode` arriveront à l'étape suivante ; les nommer dès
+ * maintenant fait signaler par TypeScript tout endroit qui ne les traite pas.
+ */
+export type PlaybackMode = 'direct' | 'unsupported';
+
+/**
+ * UNE SOURCE N'EST PAS UN FICHIER.
+ *
+ * Le type est explicite et fait autorité : rien dans le code ne doit déduire la
+ * nature d'une source de son extension. Le jour où la lecture démarrera sur une
+ * amorce pré-transcodée suivie d'un flux continu, `type` vaudra `hls` et seul
+ * le branchement dans VideoSurface changera.
+ */
+export type SourceType = 'file' | 'hls';
+
+export interface PlaybackSource {
+  url: string;
+  type: SourceType;
+}
+
+export interface SubtitleTrack {
+  id: number;
+  url: string;
+  language: string | null;
+  label: string;
+  format: string;
+  forced: number;
+  hearingImpaired: number;
+}
+
+export interface PlaybackContext {
+  kind: 'movie' | 'episode';
+  /** Titre du film, ou de la série pour un épisode. */
+  title: string;
+  /** « S01:E04 Le goût du risque » pour un épisode, null pour un film. */
+  subtitle: string | null;
+  workId: number;
+  backdropPath: string | null;
+  backdropSrcSet: string | null;
+  durationSeconds: number | null;
+}
+
+export interface Playability {
+  mediaFileId: number;
+  mode: PlaybackMode;
+  /** Null quand il n'y a rien à lire. */
+  source: PlaybackSource | null;
+  reason: string;
+  container: string | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  media: PlaybackContext | null;
+  next: { mediaFileId: number; label: string } | null;
+  subtitles: SubtitleTrack[];
+}
+
 export type SortField = 'title' | 'year' | 'added';
 
 export interface ListParams {
@@ -237,6 +306,14 @@ export interface ListParams {
   page?: number;
   /** Identifiant de genre, pour les rangées thématiques et les filtres. */
   genre?: number;
+  /**
+   * TEMPORAIRE — `direct` ne garde que les œuvres lisibles sans transcodage.
+   *
+   * 143 fichiers sur 2796 sont dans ce cas, éparpillés dans la bibliothèque.
+   * Le filtre, la pastille des vignettes et « npm run playable » disparaîtront
+   * ensemble quand le transcodage rendra tout lisible.
+   */
+  playable?: 'direct';
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -255,6 +332,7 @@ function buildQuery(params: ListParams): string {
   if (params.sort !== undefined) search.set('sort', params.sort);
   if (params.page !== undefined && params.page > 1) search.set('page', String(params.page));
   if (params.genre !== undefined) search.set('genre', String(params.genre));
+  if (params.playable !== undefined) search.set('playable', params.playable);
   const query = search.toString();
   return query === '' ? '' : `?${query}`;
 }
@@ -266,4 +344,6 @@ export const api = {
   shows: (params: ListParams) => getJson<Page<ShowSummary>>(`/api/shows${buildQuery(params)}`),
   movie: (id: number | string) => getJson<MovieDetail>(`/api/movies/${id}`),
   show: (id: number | string) => getJson<ShowDetail>(`/api/shows/${id}`),
+  playability: (mediaFileId: number | string) =>
+    getJson<Playability>(`/api/stream/${mediaFileId}/playability`),
 };

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import type { EpisodeSummary } from '../api';
 import { formatMinutes } from './DetailChrome';
@@ -163,7 +164,18 @@ function EpisodeCard({ episode }: { episode: EpisodeSummary }) {
             className="absolute inset-0 bg-[linear-gradient(to_top,rgba(0,0,0,0.55)_0%,rgba(0,0,0,0)_55%)]"
           />
 
-          <PlayBadge />
+          <PlayBadge mediaFileId={episode.mediaFileId} title={episode.title} />
+
+          {/* TEMPORAIRE — repère de mise au point du lecteur. Disparaîtra avec
+              l'arrivée du transcodage, quand tout sera lisible. */}
+          {episode.playableDirect === 1 && (
+            <span
+              title="Lisible sans transcodage"
+              className="absolute top-3 right-3 rounded-full bg-[rgba(0,168,225,0.92)] px-2 py-[3px] text-[10px] font-bold tracking-[0.1em] text-fond uppercase"
+            >
+              Lisible
+            </span>
+          )}
         </div>
       </div>
 
@@ -194,26 +206,23 @@ function EpisodeCard({ episode }: { episode: EpisodeSummary }) {
  * Bouton de lecture, en bas à gauche de la vignette survolée.
  *
  * Il est DANS le conteneur agrandi : il suit la vignette au lieu de flotter
- * au-dessus d'elle. La lecture n'existe pas encore, d'où l'état désactivé.
+ * au-dessus d'elle.
  */
-function PlayBadge() {
+function PlayBadge({ mediaFileId, title }: { mediaFileId: number; title: string | null }) {
   return (
-    <button
-      type="button"
-      disabled
-      tabIndex={-1}
-      aria-hidden="true"
-      title="Disponible prochainement"
+    <Link
+      to={`/watch/${mediaFileId}`}
+      aria-label={title === null ? 'Lire cet épisode' : `Lire — ${title}`}
       className={[
         'absolute bottom-4 left-4 flex h-11 w-11 items-center justify-center rounded-full',
         'border border-[rgba(249,249,249,0.55)] bg-[rgba(15,17,23,0.72)] text-texte backdrop-blur-[6px]',
         'opacity-0 transition-opacity duration-[180ms] motion-reduce:transition-none',
-        'group-hover:opacity-100 group-focus-visible:opacity-100',
+        'group-hover:opacity-100 group-focus-visible:opacity-100 focus-visible:opacity-100',
       ].join(' ')}
     >
       <svg width="13" height="15" viewBox="0 0 13 15" fill="currentColor" aria-hidden="true">
         <path d="M0 0l13 7.5L0 15z" />
       </svg>
-    </button>
+    </Link>
   );
 }

@@ -77,20 +77,39 @@ export function DetailBackdrop({ url, srcSet }: { url: string | null; srcSet?: s
   );
 }
 
-/** Bouton principal en dégradé accent. Désactivé tant que la lecture n'existe pas. */
-export function PlayButton({ label = 'Lire' }: { label?: string }) {
+/**
+ * Bouton principal en dégradé accent.
+ *
+ * Il navigue vers le lecteur même quand le fichier n'est pas lisible tel quel :
+ * c'est le lecteur qui explique pourquoi, avec les codecs sous les yeux. Un
+ * bouton grisé sans explication en apprendrait moins.
+ *
+ * Il n'est vraiment désactivé que sans fichier du tout sur le disque.
+ */
+export function PlayButton({ mediaFileId, label = 'Lire' }: { mediaFileId: number | null; label?: string }) {
+  const shape =
+    'accent-gradient flex h-12 items-center gap-[10px] rounded px-10 text-[15px] font-semibold shadow-[0_8px_24px_rgba(0,99,229,0.35)]';
+
+  const icon = (
+    <svg width="13" height="15" viewBox="0 0 13 15" fill="currentColor" aria-hidden="true">
+      <path d="M0 0l13 7.5L0 15z" />
+    </svg>
+  );
+
+  if (mediaFileId === null) {
+    return (
+      <button type="button" disabled title="Aucun fichier sur le disque" className={`${shape} cursor-not-allowed opacity-50`}>
+        {icon}
+        {label}
+      </button>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      disabled
-      title="Disponible prochainement"
-      className="accent-gradient flex h-12 cursor-not-allowed items-center gap-[10px] rounded px-10 text-[15px] font-semibold opacity-60 shadow-[0_8px_24px_rgba(0,99,229,0.35)]"
-    >
-      <svg width="13" height="15" viewBox="0 0 13 15" fill="currentColor" aria-hidden="true">
-        <path d="M0 0l13 7.5L0 15z" />
-      </svg>
+    <Link to={`/watch/${mediaFileId}`} className={shape}>
+      {icon}
       {label}
-    </button>
+    </Link>
   );
 }
 

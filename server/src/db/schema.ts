@@ -27,11 +27,13 @@
  *     jamais défaire.
  * 5 — logos de titres (title treatments), incrustés sur les vignettes.
  * 6 — personnes et crédits : réalisation, création, distribution.
+ * 7 — lecture : chemin brut des sous-titres, pour l'accès disque.
+ * 8 — index des images clés, pour un découpage HLS fidèle à la source.
  *
  * Les évolutions sont additives et toutes les instructions sont en
  * `IF NOT EXISTS` : rouvrir une base v1 la complète sans rien perdre.
  */
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 8;
 
 export const SCHEMA_SQL = `
 -- ---------------------------------------------------------------------------
@@ -401,6 +403,28 @@ CREATE TABLE IF NOT EXISTS credit (
 
 CREATE INDEX IF NOT EXISTS credit_by_work ON credit (work_type, work_id);
 CREATE INDEX IF NOT EXISTS credit_by_person ON credit (person_id);
+
+-- ---------------------------------------------------------------------------
+-- Phase 8 — index des images clés, pour le découpage HLS
+-- ---------------------------------------------------------------------------
+
+-- En remux la vidéo est copiée : ffmpeg ne peut couper qu'aux images clés
+-- existantes, dont l'espacement va de 1 à 12 secondes selon les fichiers et
+-- varie à l'intérieur d'un même fichier. Le manifeste doit donc décrire la
+-- découpe RÉELLE, ce qui suppose de connaître ces positions.
+--
+-- Les énumérer coûte ~2 s par film — ffprobe lit l'index du conteneur sans
+-- rien décoder — mais autant ne le faire qu'une fois.
+--
+-- « fingerprint » est taille + date de modification : si le fichier change,
+-- l'index est refait plutôt que de servir une découpe qui ne correspond plus.
+CREATE TABLE IF NOT EXISTS keyframe_index (
+  media_file_id  INTEGER PRIMARY KEY REFERENCES media_file(id) ON DELETE CASCADE,
+  fingerprint    TEXT NOT NULL,
+  -- Tableau JSON de secondes. ~1000 entrées pour un film de deux heures.
+  times_json     TEXT NOT NULL,
+  created_at     TEXT NOT NULL
+);
 `;
 
 /**
@@ -483,5 +507,15 @@ export const COLUMN_ADDITIONS: { table: string; column: string; definition: stri
    */
   { table: 'movie', column: 'certification', definition: 'TEXT' },
   { table: 'show', column: 'certification', definition: 'TEXT' },
+
+  /*
+   * --- Phase 7 : lecture ---------------------------------------------------
+   *
+   * Même raison que pour `media_file.raw_path` : la route qui sert un
+   * sous-titre le lit sur le disque, et le disque veut le chemin EXACT rendu
+   * par readdir, pas sa forme NFC. La colonne est renseignée au scan suivant ;
+   * elle reste à NULL entre-temps, et la lecture retombe alors sur `path`.
+   */
+  { table: 'subtitle', column: 'raw_path', definition: 'TEXT' },
 ];
 

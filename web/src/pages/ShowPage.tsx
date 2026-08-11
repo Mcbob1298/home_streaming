@@ -45,6 +45,11 @@ export function ShowPage() {
   const totalEpisodes = data.seasons.reduce((sum, entry) => sum + entry.episodes.length, 0);
   const genreNames = data.genres.map((genre) => genre.name);
 
+  // Premier épisode hors bonus, sinon le tout premier : c'est par là qu'on
+  // commence une série qu'on n'a pas encore vue.
+  const firstSeason = data.seasons.find((entry) => entry.seasonNumber > 0) ?? data.seasons[0];
+  const firstEpisode = firstSeason?.episodes[0];
+
   const yearRange =
     data.year === null
       ? null
@@ -103,7 +108,8 @@ export function ShowPage() {
           {shortSynopsis(data.overview) !== null && <Synopsis text={shortSynopsis(data.overview) as string} />}
 
           <div className="mt-[30px] flex items-center gap-4">
-            <PlayButton label="Lire" />
+            {/* Sur une série, « Lire » ouvre le premier épisode disponible. */}
+            <PlayButton mediaFileId={firstEpisode?.mediaFileId ?? null} label="Lire" />
             <div className="flex gap-3">
               <RoundButton label="Ajouter à ma liste">{ICONS.plus}</RoundButton>
               <RoundButton label="Partager">{ICONS.share}</RoundButton>

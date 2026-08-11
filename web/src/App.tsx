@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom';
+import { Route, Routes, useLocation } from 'react-router-dom';
 
 import { TopNav } from './components/TopNav';
 import { GenresPage } from './pages/GenresPage';
@@ -10,9 +10,14 @@ import { ReviewPage } from './pages/ReviewPage';
 import { SearchPage } from './pages/SearchPage';
 import { ShowPage } from './pages/ShowPage';
 import { TileDemoPage } from './pages/TileDemoPage';
+import { WatchPage } from './pages/WatchPage';
 
 /**
- * Trois gabarits.
+ * Quatre gabarits.
+ *
+ * Le lecteur n'en a aucun : il occupe l'écran entier, sans barre de
+ * navigation. Une barre fixe par-dessus une vidéo plein écran n'aurait pas de
+ * sens, et ses raccourcis clavier entreraient en conflit avec ceux du lecteur.
  *
  * Pleine largeur sans marge haute pour l'accueil et les fiches : leur image de
  * fond passe SOUS la barre de navigation, c'est ce qui donne l'ampleur.
@@ -25,10 +30,13 @@ import { TileDemoPage } from './pages/TileDemoPage';
  * traverse un écran de 2560px devient illisible.
  */
 export function App() {
+  const onWatchPage = useLocation().pathname.startsWith('/watch/');
+
   return (
     <div className="min-h-screen">
-      <TopNav />
+      {!onWatchPage && <TopNav />}
       <Routes>
+        <Route path="/watch/:mediaFileId" element={<WatchPage />} />
         <Route path="/" element={<HomePage />} />
         <Route path="/movie/:id" element={<MoviePage />} />
         <Route path="/show/:id" element={<ShowPage />} />

@@ -11,6 +11,9 @@
     "metadata": "tsx src/metadata/cli.ts",
     "images": "tsx src/images/cli.ts",
     "cleanup": "tsx src/cleanup/cli.ts",
+    "playable": "tsx src/playback/cli.ts",
+    "keyframes": "tsx src/transcode/cli.ts",
+    "migrate-paths": "tsx src/migrate/cli.ts",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"

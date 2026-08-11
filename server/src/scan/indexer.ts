@@ -112,13 +112,14 @@ function prepareStatements(db: Db) {
     ),
     upsertSubtitle: db.prepare(`
       INSERT INTO subtitle (
-        media_file_id, path, path_key, file_name, format, language,
+        media_file_id, path, path_key, raw_path, file_name, format, language,
         forced, hearing_impaired, size_bytes, mtime_ms, present
-      ) VALUES (@media_file_id, @path, @path_key, @file_name, @format, @language,
+      ) VALUES (@media_file_id, @path, @path_key, @raw_path, @file_name, @format, @language,
         @forced, @hearing_impaired, @size_bytes, @mtime_ms, 1)
       ON CONFLICT(path_key) DO UPDATE SET
         media_file_id    = excluded.media_file_id,
         path             = excluded.path,
+        raw_path         = excluded.raw_path,
         file_name        = excluded.file_name,
         format           = excluded.format,
         language         = excluded.language,
@@ -334,6 +335,9 @@ export function indexLibrary(
           media_file_id: mediaFileId,
           path: subtitle.storedPath,
           path_key: pathKey(subtitle.storedPath),
+          // Chemin EXACT rendu par readdir : c'est celui-là que la route de
+          // sous-titres donnera au système de fichiers.
+          raw_path: subtitle.absolutePath,
           file_name: subtitle.fileName,
           format: subtitle.extension.replace('.', ''),
           language: parsed.language,

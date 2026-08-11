@@ -21,6 +21,21 @@ export interface LibraryConfig {
   paths: string[];
 }
 
+/**
+ * Réglages de transcodage.
+ *
+ * `workDir` reçoit les segments des sessions en cours. Il est écrit et relu
+ * sans arrêt : en production ce sera un tmpfs, comme le /transcode de Plex.
+ * Tout y est effaçable — le contenu d'une session interrompue ne vaut rien.
+ */
+export interface TranscodeConfig {
+  workDir: string;
+  /** Sessions ffmpeg simultanées. Au-delà, les demandes attendent leur tour. */
+  maxSessions: number;
+  /** Une session sans requête depuis ce délai est tuée. */
+  idleSeconds: number;
+}
+
 export interface AppConfig {
   databasePath: string;
   /**
@@ -29,10 +44,19 @@ export interface AppConfig {
    * milliers de petits fichiers, et on les relit à chaque affichage de grille.
    */
   imagesPath: string;
+  transcode: TranscodeConfig;
   libraries: LibraryConfig[];
 }
 
 const DEFAULT_IMAGES_PATH = './data/images';
+
+const DEFAULT_TRANSCODE: TranscodeConfig = {
+  workDir: './data/transcode',
+  // Un seul moteur matériel sur le NAS : trois sessions saturent déjà le NAS
+  // sans que la quatrième n'apporte quoi que ce soit.
+  maxSessions: 3,
+  idleSeconds: 60,
+};
 
 /**
  * Racine du dépôt, déduite de l'emplacement de ce fichier.
@@ -41,8 +65,26 @@ const DEFAULT_IMAGES_PATH = './data/images';
  */
 export const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-export const CONFIG_PATH = path.join(REPO_ROOT, 'config.json');
+/**
+ * Fichier de configuration.
+ *
+ * `HOME_STREAMING_CONFIG` permet d'en désigner un autre, ce qui fait coexister
+ * le poste de développement et le NAS sans qu'ils se marchent dessus : le dépôt
+ * porte `config.json` (chemins Windows) ET `config.production.json` (chemins
+ * Linux), et c'est l'environnement qui tranche. Aucun des deux n'écrase l'autre
+ * au transfert.
+ */
+export const CONFIG_PATH =
+  process.env.HOME_STREAMING_CONFIG !== undefined && process.env.HOME_STREAMING_CONFIG !== ''
+    ? resolveFromRepoRootEarly(process.env.HOME_STREAMING_CONFIG)
+    : path.join(REPO_ROOT, 'config.json');
+
 export const DATA_DIR = path.join(REPO_ROOT, 'data');
+
+/** Même résolution que `resolveFromRepoRoot`, utilisable avant sa déclaration. */
+function resolveFromRepoRootEarly(value: string): string {
+  return path.isAbsolute(value) ? value : path.resolve(REPO_ROOT, value);
+}
 
 /** Résout un chemin de la config par rapport à la racine du dépôt. */
 export function resolveFromRepoRoot(value: string): string {
@@ -125,7 +167,38 @@ export function validateConfig(raw: unknown): AppConfig {
   return {
     databasePath: databasePath.trim(),
     imagesPath: typeof imagesPath === 'string' ? imagesPath.trim() : DEFAULT_IMAGES_PATH,
+    transcode: validateTranscode(config.transcode),
     libraries: parsed,
+  };
+}
+
+/**
+ * Section « transcode », entièrement optionnelle.
+ *
+ * Une configuration écrite avant ce palier reste valide : chaque champ absent
+ * prend sa valeur par défaut plutôt que de faire échouer le démarrage.
+ */
+function validateTranscode(raw: unknown): TranscodeConfig {
+  if (raw === undefined || raw === null) return { ...DEFAULT_TRANSCODE };
+  if (typeof raw !== 'object') fail('config.json : "transcode" doit être un objet.');
+
+  const section = raw as Record<string, unknown>;
+  const { workDir, maxSessions, idleSeconds } = section;
+
+  if (workDir !== undefined && (typeof workDir !== 'string' || workDir.trim() === '')) {
+    fail('config.json : "transcode.workDir" doit être une chaîne non vide.');
+  }
+  if (maxSessions !== undefined && (typeof maxSessions !== 'number' || maxSessions < 1)) {
+    fail('config.json : "transcode.maxSessions" doit être un entier positif.');
+  }
+  if (idleSeconds !== undefined && (typeof idleSeconds !== 'number' || idleSeconds < 5)) {
+    fail('config.json : "transcode.idleSeconds" doit valoir au moins 5.');
+  }
+
+  return {
+    workDir: typeof workDir === 'string' ? workDir.trim() : DEFAULT_TRANSCODE.workDir,
+    maxSessions: typeof maxSessions === 'number' ? Math.floor(maxSessions) : DEFAULT_TRANSCODE.maxSessions,
+    idleSeconds: typeof idleSeconds === 'number' ? Math.floor(idleSeconds) : DEFAULT_TRANSCODE.idleSeconds,
   };
 }
 
@@ -160,6 +233,11 @@ export function resolveDatabasePath(config: AppConfig): string {
 /** Chemin absolu du dossier des affiches téléchargées. */
 export function resolveImagesPath(config: AppConfig): string {
   return resolveFromRepoRoot(config.imagesPath);
+}
+
+/** Chemin absolu du répertoire de travail des sessions de transcodage. */
+export function resolveTranscodePath(config: AppConfig): string {
+  return resolveFromRepoRoot(config.transcode.workDir);
 }
 
 /**

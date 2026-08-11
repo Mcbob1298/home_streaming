@@ -78,7 +78,7 @@ export function MoviePage() {
           {shortSynopsis(data.overview) !== null && <Synopsis text={shortSynopsis(data.overview) as string} />}
 
           <div className="mt-[30px] flex items-center gap-4">
-            <PlayButton />
+            <PlayButton mediaFileId={data.files[0]?.id ?? null} />
             <div className="flex gap-3">
               <RoundButton label="Ajouter à ma liste">{ICONS.plus}</RoundButton>
               <RoundButton label="Partager">{ICONS.share}</RoundButton>

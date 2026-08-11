@@ -13,12 +13,28 @@ import path from 'node:path';
 import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
 
+import { registerHlsRoutes } from './api/hls.js';
 import { registerReviewRoutes } from './api/review.js';
 import { registerRoutes } from './api/routes.js';
+import { registerStreamRoutes } from './api/stream.js';
 import { ImageDownloader } from './metadata/images.js';
 import { TmdbClient } from './metadata/tmdb.js';
 import type { EnrichContext } from './metadata/enrich.js';
-import { loadConfig, loadEnvFile, REPO_ROOT, resolveDatabasePath, resolveImagesPath } from './config.js';
+import { SessionManager } from './transcode/manager.js';
+import {
+  describeCapabilities,
+  detectCapabilities,
+  type FfmpegCapabilities,
+} from './transcode/capabilities.js';
+import {
+  DATA_DIR,
+  loadConfig,
+  loadEnvFile,
+  REPO_ROOT,
+  resolveDatabasePath,
+  resolveImagesPath,
+  resolveTranscodePath,
+} from './config.js';
 import { openDatabase } from './db/index.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
@@ -34,7 +50,37 @@ async function main(): Promise<void> {
 
   const app = Fastify({ logger: { transport: undefined, level: 'info' } });
 
+  /*
+   * Détection de ffmpeg, sans jamais la supposer réussie.
+   *
+   * Son absence n'empêche PAS le serveur de démarrer : les 143 fichiers déjà
+   * compatibles restent lisibles, et la décision de lecture le dit clairement
+   * pour les autres. Un serveur qui refuse de démarrer parce qu'un encodeur
+   * manque serait un mauvais échange.
+   */
+  let sessionManager: SessionManager | null = null;
+  let hardwareReport: FfmpegCapabilities | null = null;
+
   registerRoutes(app, db);
+  registerStreamRoutes(app, db, () => sessionManager !== null);
+  registerHlsRoutes(app, db, () => sessionManager);
+
+  /*
+   * L'état de l'accélération, consultable sans lire les journaux. Il porte le
+   * détail des essais : lequel a été retenu, et ce que les autres ont répondu.
+   */
+  app.get('/api/transcode/capabilities', () => {
+    if (hardwareReport === null) return { available: false, reason: 'ffmpeg introuvable au démarrage.' };
+    return {
+      available: true,
+      ffmpeg: hardwareReport.version,
+      device: hardwareReport.device,
+      hardware: hardwareReport.hardware,
+      cached: hardwareReport.cached,
+      probes: hardwareReport.probes,
+      summary: describeCapabilities(hardwareReport),
+    };
+  });
 
   /*
    * Le client TMDB est construit à la première demande, et une seule fois.
@@ -81,15 +127,48 @@ async function main(): Promise<void> {
     });
   }
 
+  const transcodePath = resolveTranscodePath(config);
+  try {
+    /*
+     * Les essais d'encodage sont mis en cache dans DATA_DIR, à côté de la base.
+     * Le cache tombe de lui-même dès que la version de ffmpeg ou le
+     * périphérique de rendu change — c'est-à-dire dès que la réponse pourrait
+     * être différente.
+     */
+    const capabilities = await detectCapabilities({ dataDir: DATA_DIR });
+    hardwareReport = capabilities;
+    for (const line of describeCapabilities(capabilities)) app.log.info(line);
+
+    sessionManager = new SessionManager({
+      ffmpegBinary: capabilities.binary,
+      workDir: transcodePath,
+      maxSessions: config.transcode.maxSessions,
+      idleSeconds: config.transcode.idleSeconds,
+      onLog: (message, details) => app.log.info(details ?? {}, message),
+    });
+    await sessionManager.start();
+    app.log.info(
+      `Transcodage : ${transcodePath} — ${config.transcode.maxSessions} session(s), ` +
+        `expiration après ${config.transcode.idleSeconds} s`,
+    );
+  } catch (error) {
+    app.log.warn((error as Error).message);
+  }
+
   await app.listen({ port: PORT, host: HOST });
   app.log.info(`Base SQLite : ${databasePath}`);
   if (!existsSync(webDist)) {
     app.log.info('web/dist absent : seule l’API est servie (normal en développement).');
   }
 
+  /*
+   * Troisième filet contre le ffmpeg orphelin : quoi qu'il arrive, l'arrêt du
+   * serveur tue les processus restants et vide le répertoire de travail.
+   */
   const shutdown = (): void => {
-    app
-      .close()
+    void (sessionManager?.stop() ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => app.close())
       .then(() => {
         db.close();
         process.exit(0);

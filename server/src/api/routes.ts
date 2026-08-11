@@ -12,6 +12,7 @@ import type { FastifyInstance } from 'fastify';
 
 import type { Db } from '../db/index.js';
 import { buildSrcSet, defaultImagePath, type ImageKind } from '../metadata/images.js';
+import { directPlaySql } from '../playback/playability.js';
 import { fileSummaryOf, type WorkType } from './fileSummary.js';
 import {
   buildOrderBy,
@@ -91,6 +92,45 @@ function readGenreId(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
+
+/* ===========================================================================
+ * TEMPORAIRE — repérage des œuvres directement lisibles
+ *
+ * 143 fichiers sur 2796 partent tels quels dans un navigateur, éparpillés dans
+ * la bibliothèque, ce qui rend les essais pénibles. D'où ce filtre et le
+ * compteur qui l'accompagne, qui alimentent une pastille sur les vignettes.
+ *
+ * TOUT CE BLOC DISPARAÎT quand le transcodage rendra la bibliothèque
+ * entièrement lisible : le filtre, le compteur, la pastille côté front, et la
+ * commande « npm run playable ».
+ * ======================================================================== */
+
+/** Sous-requête « cette œuvre a au moins un fichier directement lisible ». */
+function directPlayExists(table: 'movie' | 'show'): string {
+  return table === 'movie'
+    ? `EXISTS (SELECT 1 FROM media_file f
+               WHERE f.movie_id = movie.id AND f.present = 1 AND ${directPlaySql('f')})`
+    : `EXISTS (SELECT 1 FROM episode e
+               JOIN media_file f ON f.episode_id = e.id AND f.present = 1
+               WHERE e.show_id = show.id AND ${directPlaySql('f')})`;
+}
+
+/** Colonne « combien de ses fichiers sont directement lisibles ». */
+function directPlayCount(table: 'movie' | 'show'): string {
+  return table === 'movie'
+    ? `(SELECT COUNT(*) FROM media_file f
+        WHERE f.movie_id = movie.id AND f.present = 1 AND ${directPlaySql('f')}) AS playableFileCount`
+    : `(SELECT COUNT(*) FROM episode e
+        JOIN media_file f ON f.episode_id = e.id AND f.present = 1
+        WHERE e.show_id = show.id AND ${directPlaySql('f')}) AS playableFileCount`;
+}
+
+/** `?playable=direct` — seule valeur reconnue, tout le reste ne filtre rien. */
+function playableClause(table: 'movie' | 'show', value: unknown): string {
+  return value === 'direct' ? `AND ${directPlayExists(table)}` : '';
+}
+
+/* ==================== fin du bloc temporaire ============================ */
 
 /**
  * Fichiers d'une œuvre, avec tout ce que ffprobe en a tiré.
@@ -220,7 +260,9 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
     }
 
     // L'identifiant de genre est validé comme entier avant d'entrer dans le SQL.
-    const whereSql = `WHERE ${where.join(' AND ')} ${search.sql} ${genreClause('movie', readGenreId(query.genre))}`;
+    const whereSql =
+      `WHERE ${where.join(' AND ')} ${search.sql} ${genreClause('movie', readGenreId(query.genre))} ` +
+      playableClause('movie', query.playable);
     const allParameters = [...parameters, ...search.parameters];
 
     const { total } = db.prepare(`SELECT COUNT(*) AS total FROM movie ${whereSql}`).get(...allParameters) as {
@@ -234,6 +276,7 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
                   backdrop_path AS backdropPath, logo_path AS logoPath, added_at AS addedAt,
                   vote_average AS voteAverage, runtime, tagline, overview,
                   ${genresOf('movie')},
+                  ${directPlayCount('movie')},
                   (SELECT COUNT(*) FROM media_file f WHERE f.movie_id = movie.id AND f.present = 1) AS fileCount
            FROM movie ${whereSql}
            ORDER BY ${buildOrderBy(sort, order)}
@@ -301,7 +344,9 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
       parameters.push(libraryId);
     }
 
-    const whereSql = `WHERE ${where.join(' AND ')} ${search.sql} ${genreClause('show', readGenreId(query.genre))}`;
+    const whereSql =
+      `WHERE ${where.join(' AND ')} ${search.sql} ${genreClause('show', readGenreId(query.genre))} ` +
+      playableClause('show', query.playable);
     const allParameters = [...parameters, ...search.parameters];
 
     const { total } = db.prepare(`SELECT COUNT(*) AS total FROM show ${whereSql}`).get(...allParameters) as {
@@ -315,6 +360,7 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
                   backdrop_path AS backdropPath, logo_path AS logoPath, added_at AS addedAt,
                   vote_average AS voteAverage, status, overview,
                   ${genresOf('show')},
+                  ${directPlayCount('show')},
                   (SELECT COUNT(DISTINCT e.season_number) FROM episode e
                      JOIN media_file f ON f.episode_id = e.id AND f.present = 1
                     WHERE e.show_id = show.id) AS seasonCount,
@@ -389,7 +435,12 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
           `SELECT e.id, e.season_number AS seasonNumber, e.episode_number AS episodeNumber,
                   e.episode_number_end AS episodeNumberEnd, e.title, e.overview,
                   e.still_path AS stillPath, e.air_date AS airDate, e.runtime,
-                  COUNT(f.id) AS fileCount
+                  COUNT(f.id) AS fileCount,
+                  -- Fichier à ouvrir au clic sur « Lire ». Le plus petit
+                  -- identifiant, donc le premier vu au scan : sur un épisode
+                  -- présent en deux versions, il en faut bien un.
+                  MIN(f.id) AS mediaFileId,
+                  MAX(CASE WHEN ${directPlaySql('f')} THEN 1 ELSE 0 END) AS playableDirect
            FROM episode e
            JOIN media_file f ON f.episode_id = e.id AND f.present = 1
            WHERE e.show_id = ?
