@@ -21,11 +21,13 @@
  * 1 — index initial (phase 1)
  * 2 — enrichissement (phase 2) : file de jobs, pistes audio, sous-titres
  *     embarqués, chemin brut des fichiers.
+ * 3 — métadonnées TMDB : genres, appariements et leurs candidats, colonnes
+ *     descriptives sur les œuvres.
  *
  * Les évolutions sont additives et toutes les instructions sont en
  * `IF NOT EXISTS` : rouvrir une base v1 la complète sans rien perdre.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const SCHEMA_SQL = `
 -- ---------------------------------------------------------------------------
@@ -303,6 +305,58 @@ CREATE TABLE IF NOT EXISTS embedded_subtitle (
 );
 
 CREATE INDEX IF NOT EXISTS embedded_subtitle_by_file ON embedded_subtitle (media_file_id);
+
+-- ---------------------------------------------------------------------------
+-- Phase 3 — métadonnées TMDB
+-- ---------------------------------------------------------------------------
+
+-- L'identifiant est celui de TMDB : deux œuvres partageant un genre pointent
+-- sur la même ligne, et le libellé se met à jour tout seul d'une passe à l'autre.
+CREATE TABLE IF NOT EXISTS genre (
+  id    INTEGER PRIMARY KEY,
+  name  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS movie_genre (
+  movie_id  INTEGER NOT NULL REFERENCES movie(id) ON DELETE CASCADE,
+  genre_id  INTEGER NOT NULL REFERENCES genre(id) ON DELETE CASCADE,
+  PRIMARY KEY (movie_id, genre_id)
+);
+
+CREATE TABLE IF NOT EXISTS show_genre (
+  show_id   INTEGER NOT NULL REFERENCES show(id) ON DELETE CASCADE,
+  genre_id  INTEGER NOT NULL REFERENCES genre(id) ON DELETE CASCADE,
+  PRIMARY KEY (show_id, genre_id)
+);
+
+-- Trace de l'appariement avec TMDB, y compris quand il a échoué.
+--
+-- « status » vaut :
+--   applied      — correspondance sûre, les métadonnées ont été écrites ;
+--   needs_review — correspondance douteuse, RIEN n'a été écrit, à trancher
+--                  à la main dans l'écran de review ;
+--   ignored      — l'utilisateur a décidé de ne pas apparier cette œuvre ;
+--   not_found    — TMDB ne renvoie aucun candidat.
+--
+-- « candidates_json » conserve les cinq premiers résultats de la recherche
+-- pour alimenter l'écran de review sans réinterroger TMDB.
+CREATE TABLE IF NOT EXISTS tmdb_match (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_type      TEXT NOT NULL CHECK (target_type IN ('movie', 'show')),
+  target_id        INTEGER NOT NULL,
+  status           TEXT NOT NULL
+                   CHECK (status IN ('applied', 'needs_review', 'ignored', 'not_found')),
+  tmdb_id          INTEGER,
+  confidence       REAL,
+  reason           TEXT,
+  candidates_json  TEXT,
+  searched_title   TEXT,
+  searched_year    INTEGER,
+  updated_at       TEXT NOT NULL,
+  UNIQUE (target_type, target_id)
+);
+
+CREATE INDEX IF NOT EXISTS tmdb_match_by_status ON tmdb_match (status);
 `;
 
 /**
@@ -322,5 +376,29 @@ export const COLUMN_ADDITIONS: { table: string; column: string; definition: stri
    * lecture) doit passer par `raw_path`.
    */
   { table: 'media_file', column: 'raw_path', definition: 'TEXT' },
+
+  // --- Phase 3 : descriptif venu de TMDB -----------------------------------
+  // `poster_path` et `backdrop_path` existent depuis la phase 1 et contiennent
+  // le chemin TMDB brut (« /abc.jpg »). L'API le transforme en URL locale ;
+  // l'image elle-même est téléchargée sous data/images.
+  { table: 'movie', column: 'release_date', definition: 'TEXT' },
+  { table: 'movie', column: 'runtime', definition: 'INTEGER' },
+  { table: 'movie', column: 'vote_average', definition: 'REAL' },
+  { table: 'movie', column: 'original_title', definition: 'TEXT' },
+  { table: 'movie', column: 'tagline', definition: 'TEXT' },
+
+  { table: 'show', column: 'first_air_date', definition: 'TEXT' },
+  { table: 'show', column: 'status', definition: 'TEXT' },
+  { table: 'show', column: 'number_of_seasons', definition: 'INTEGER' },
+  { table: 'show', column: 'vote_average', definition: 'REAL' },
+  { table: 'show', column: 'original_title', definition: 'TEXT' },
+
+  { table: 'season', column: 'tmdb_id', definition: 'INTEGER' },
+  { table: 'season', column: 'air_date', definition: 'TEXT' },
+
+  { table: 'episode', column: 'still_path', definition: 'TEXT' },
+  { table: 'episode', column: 'air_date', definition: 'TEXT' },
+  { table: 'episode', column: 'vote_average', definition: 'REAL' },
+  { table: 'episode', column: 'runtime', definition: 'INTEGER' },
 ];
 

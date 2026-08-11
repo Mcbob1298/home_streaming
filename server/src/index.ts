@@ -7,27 +7,47 @@
  * En production, si `web/dist` existe (après `npm run build`), le serveur sert
  * aussi le front : une seule adresse à retenir.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
 
 import { registerRoutes } from './api/routes.js';
-import { loadConfig, REPO_ROOT, resolveDatabasePath } from './config.js';
+import { loadConfig, loadEnvFile, REPO_ROOT, resolveDatabasePath, resolveImagesPath } from './config.js';
 import { openDatabase } from './db/index.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const HOST = process.env.HOST ?? '127.0.0.1';
 
 async function main(): Promise<void> {
+  loadEnvFile();
+
   const config = loadConfig();
   const databasePath = resolveDatabasePath(config);
+  const imagesPath = resolveImagesPath(config);
   const db = openDatabase(databasePath);
 
   const app = Fastify({ logger: { transport: undefined, level: 'info' } });
 
   registerRoutes(app, db);
+
+  /*
+   * Affiches téléchargées par `npm run metadata`.
+   *
+   * Le nom de fichier vient de TMDB et ne change jamais pour une image donnée :
+   * on peut donc dire au navigateur de la garder très longtemps en cache.
+   * `mkdirSync` évite que Fastify refuse de démarrer si la passe métadonnées
+   * n'a pas encore tourné.
+   */
+  mkdirSync(imagesPath, { recursive: true });
+  await app.register(fastifyStatic, {
+    root: imagesPath,
+    prefix: '/images/',
+    decorateReply: false,
+    maxAge: '365d',
+    immutable: true,
+  });
 
   const webDist = path.join(REPO_ROOT, 'web', 'dist');
   if (existsSync(webDist)) {

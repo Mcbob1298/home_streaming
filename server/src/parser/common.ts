@@ -3,7 +3,9 @@
  * Tout est pur : aucune de ces fonctions ne touche au disque.
  */
 import { nfc } from '../util/text.js';
+import { segmentGluedWords } from './glued.js';
 import { findNoiseCutIndex, normalizeSeparators, stripBracketBlocks, trimJunk } from './noise.js';
+import { stripReleaseSites } from './sites.js';
 
 /** Bornes de plausibilité d'une année de sortie. */
 export const DEFAULT_MIN_YEAR = 1900;
@@ -40,11 +42,29 @@ export function splitExtension(fileName: string): { base: string; ext: string } 
 }
 
 /**
- * Nettoie un titre : blocs entre crochets, séparateurs scène, ponctuation
- * résiduelle. Avec `cutNoise`, coupe aussi au premier marqueur technique.
+ * Remise en forme d'un nom avant toute interprétation.
+ *
+ * L'ordre compte :
+ *
+ * 1. marques de sites de téléchargement — sinon « darkino com-126791- » est
+ *    pris pour le début du titre ;
+ * 2. blocs entre crochets ;
+ * 3. segmentation des mots collés — DOIT précéder le nettoyage du bruit, car
+ *    c'est elle qui fait apparaître « 2022 » et « MULTi » comme des jetons
+ *    distincts dans « …Mystery2022MULTiVFi… ». Sans elle, ni l'année ni les
+ *    marqueurs techniques ne sont visibles.
+ */
+export function prepareName(raw: string): string {
+  return segmentGluedWords(stripBracketBlocks(stripReleaseSites(nfc(raw))));
+}
+
+/**
+ * Nettoie un titre : marques de sites, blocs entre crochets, mots collés,
+ * séparateurs scène, ponctuation résiduelle. Avec `cutNoise`, coupe aussi au
+ * premier marqueur technique.
  */
 export function cleanTitle(raw: string, options: { cutNoise?: boolean } = {}): string {
-  let value = normalizeSeparators(stripBracketBlocks(nfc(raw)));
+  let value = normalizeSeparators(prepareName(raw));
   if (options.cutNoise) {
     const cut = findNoiseCutIndex(value);
     if (cut !== -1) value = value.slice(0, cut);
@@ -90,7 +110,9 @@ function findStandaloneYears(value: string, minYear: number, maxYear: number): Y
 export function extractTitleAndYear(raw: string, options: ParseOptions = {}): TitleAndYear {
   const minYear = options.minYear ?? DEFAULT_MIN_YEAR;
   const maxYear = options.maxYear ?? DEFAULT_MAX_YEAR;
-  const source = nfc(raw);
+  // Marques de sites et mots collés sont traités d'abord : l'année et les
+  // marqueurs techniques ne deviennent visibles qu'une fois le nom remis en forme.
+  const source = prepareName(raw);
 
   PAREN_YEAR_RE.lastIndex = 0;
   for (let match = PAREN_YEAR_RE.exec(source); match; match = PAREN_YEAR_RE.exec(source)) {
@@ -100,7 +122,7 @@ export function extractTitleAndYear(raw: string, options: ParseOptions = {}): Ti
     if (title !== '') return { title, year };
   }
 
-  const normalized = normalizeSeparators(stripBracketBlocks(source));
+  const normalized = normalizeSeparators(source);
   const noiseCut = findNoiseCutIndex(normalized);
 
   for (const candidate of findStandaloneYears(normalized, minYear, maxYear)) {

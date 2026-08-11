@@ -173,6 +173,28 @@ function findDuplicates(db: Db, library: LibraryConfig): DuplicateRow[] {
     .all(library.id) as DuplicateRow[];
 }
 
+/**
+ * Fichiers dont le nom contient le caractère de remplacement Unicode (U+FFFD).
+ *
+ * Ce caractère est ce que produit un décodage raté : un nom écrit en CP1252 ou
+ * Latin-1, relu comme de l'UTF-8. Vérification faite, il est bel et bien stocké
+ * tel quel dans le nom sur le NAS — ce n'est pas notre lecture qui le fabrique,
+ * `readdir` le restitue fidèlement.
+ *
+ * On ne devine pas le caractère perdu : « Super H□ros » peut être « Héros »,
+ * mais l'affirmer serait inventer. Ces fichiers sont donc listés pour être
+ * renommés à la main sur le NAS.
+ */
+function findMisdecodedNames(db: Db, libraryId: string): { path: string }[] {
+  return db
+    .prepare(
+      `SELECT path FROM media_file
+       WHERE library_id = ? AND present = 1 AND path LIKE '%' || char(65533) || '%'
+       ORDER BY path`,
+    )
+    .all(libraryId) as { path: string }[];
+}
+
 function findUnparsed(db: Db, libraryId: string): UnparsedRow[] {
   return db
     .prepare(
@@ -286,6 +308,18 @@ export function buildReport(db: Db, summaries: LibraryScanSummary[]): string {
     out.push(`  FICHIERS NON INTERPRÉTÉS : ${unparsed.length}`);
     for (const row of unparsed) {
       out.push(`    [${row.parse_reason ?? 'inconnu'}] ${row.path}`);
+    }
+
+    // --- Noms mal décodés : à renommer sur le NAS -------------------------
+    const misdecoded = findMisdecodedNames(db, library.id);
+    if (misdecoded.length > 0) {
+      out.push('');
+      out.push(`  NOMS MAL DÉCODÉS : ${misdecoded.length}`);
+      out.push('    Le caractère de remplacement Unicode (U+FFFD) est réellement présent');
+      out.push('    dans le nom sur le NAS — ce n’est pas un problème de lecture. Le');
+      out.push('    caractère d’origine est perdu et ne peut pas être deviné : renommez');
+      out.push('    ces fichiers à la main.');
+      for (const row of misdecoded) out.push(`    ${row.path}`);
     }
 
     // --- Chemins inaccessibles : liste complète, jamais tronquée -----------

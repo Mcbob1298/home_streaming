@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "scan": "tsx src/scan/cli.ts",
     "probe": "tsx src/probe/cli.ts",
+    "metadata": "tsx src/metadata/cli.ts",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"

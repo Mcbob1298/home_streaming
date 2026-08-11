@@ -23,8 +23,16 @@ export interface LibraryConfig {
 
 export interface AppConfig {
   databasePath: string;
+  /**
+   * Où sont rangées les affiches téléchargées. Comme la base, ce dossier doit
+   * rester sur le stockage rapide local — jamais sur le NAS : on y écrit des
+   * milliers de petits fichiers, et on les relit à chaque affichage de grille.
+   */
+  imagesPath: string;
   libraries: LibraryConfig[];
 }
+
+const DEFAULT_IMAGES_PATH = './data/images';
 
 /**
  * Racine du dépôt, déduite de l'emplacement de ce fichier.
@@ -96,6 +104,11 @@ export function validateConfig(raw: unknown): AppConfig {
     fail('config.json doit définir "databasePath".');
   }
 
+  const imagesPath = config.imagesPath;
+  if (imagesPath !== undefined && (typeof imagesPath !== 'string' || imagesPath.trim() === '')) {
+    fail('config.json : "imagesPath" doit être une chaîne non vide.');
+  }
+
   const libraries = config.libraries;
   if (!Array.isArray(libraries) || libraries.length === 0) {
     fail('config.json doit définir au moins une bibliothèque dans "libraries".');
@@ -109,7 +122,11 @@ export function validateConfig(raw: unknown): AppConfig {
     ids.add(library.id);
   }
 
-  return { databasePath: databasePath.trim(), libraries: parsed };
+  return {
+    databasePath: databasePath.trim(),
+    imagesPath: typeof imagesPath === 'string' ? imagesPath.trim() : DEFAULT_IMAGES_PATH,
+    libraries: parsed,
+  };
 }
 
 let cached: AppConfig | null = null;
@@ -138,4 +155,25 @@ export function loadConfig(): AppConfig {
 /** Chemin absolu de la base SQLite, toujours en local. */
 export function resolveDatabasePath(config: AppConfig): string {
   return resolveFromRepoRoot(config.databasePath);
+}
+
+/** Chemin absolu du dossier des affiches téléchargées. */
+export function resolveImagesPath(config: AppConfig): string {
+  return resolveFromRepoRoot(config.imagesPath);
+}
+
+/**
+ * Charge les variables du fichier .env à la racine du dépôt.
+ *
+ * `process.loadEnvFile` fait partie de Node depuis la 20.12 : pas besoin de
+ * dépendance. Les variables déjà définies dans l'environnement l'emportent,
+ * ce qui permet de surcharger ponctuellement sans modifier le fichier.
+ */
+export function loadEnvFile(): void {
+  try {
+    process.loadEnvFile(path.join(REPO_ROOT, '.env'));
+  } catch {
+    // Pas de .env : ce n'est pas une erreur en soi. C'est la commande qui a
+    // besoin d'un secret qui se plaindra, avec un message utile.
+  }
 }

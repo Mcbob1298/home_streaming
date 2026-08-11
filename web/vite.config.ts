@@ -7,6 +7,11 @@ import { defineConfig } from 'vite';
  * Fastify sur le 3000. Le proxy ci-dessous fait croire au navigateur que tout
  * vient de la même adresse : le code du front appelle simplement « /api/... »,
  * sans se soucier du port ni du CORS.
+ *
+ * « /images » doit y figurer aussi : ce sont les affiches téléchargées par
+ * `npm run metadata`, servies par Fastify. Sans cette entrée, Vite répondrait
+ * index.html à la place de l'image — une page HTML dans une balise <img>, donc
+ * une affiche cassée, et sans erreur visible dans les journaux.
  */
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -14,6 +19,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': { target: 'http://127.0.0.1:3000', changeOrigin: false },
+      '/images': { target: 'http://127.0.0.1:3000', changeOrigin: false },
     },
   },
 });

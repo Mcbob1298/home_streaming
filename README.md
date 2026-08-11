@@ -32,6 +32,7 @@ Puis ouvrez http://localhost:5173.
 | `npm run dev`   | Lance l'API (port 3000) et Vite (port 5173) en parallèle, en rechargement |
 | `npm run scan`  | Parcourt les racines et met à jour l'index. **À lancer à la main**        |
 | `npm run probe` | Sonde les fichiers avec ffprobe (codecs, définition, durée, pistes)       |
+| `npm run metadata` | Apparie avec TMDB et télécharge les affiches                          |
 | `npm test`      | Tests unitaires du parser                                                |
 | `npm run build` | Compile le serveur (`server/dist`) et l'interface (`web/dist`)           |
 | `npm start`     | Lance le serveur compilé, qui sert aussi l'interface si elle est buildée  |
@@ -53,10 +54,23 @@ npm run probe -- --concurrency=3    # NAS particulièrement lent
 npm run probe -- --timeout=60       # délai maximum par fichier, en secondes
 ```
 
-> Ni le scan ni le sondage ne sont **jamais** déclenchés par une requête HTTP.
+Options des métadonnées :
+
+```bash
+npm run metadata -- --full           # réapparie tout, y compris ce qui est fait
+npm run metadata -- --retry-failed   # rejoue uniquement les entrées en échec
+npm run metadata -- --refresh        # ignore le cache disque et réinterroge TMDB
+npm run metadata -- --shows-only     # ou --movies-only
+```
+
+> Aucune de ces passes n'est **jamais** déclenchée par une requête HTTP.
 > Ce sont des opérations longues qui écrivent en base et sollicitent lourdement
-> le NAS ; elles se lancent explicitement, jamais par accident au chargement
-> d'une page.
+> le NAS ou l'API ; elles se lancent explicitement, jamais par accident au
+> chargement d'une page.
+
+> Le `--` final dans les scripts de la racine n'est pas décoratif : sans lui,
+> `npm run scan -- --full` verrait npm avaler `--full` comme une de ses propres
+> options au lieu de la transmettre au script.
 
 ---
 

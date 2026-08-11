@@ -11,6 +11,7 @@
 import type { FastifyInstance } from 'fastify';
 
 import type { Db } from '../db/index.js';
+import { publicImagePath, type ImageKind } from '../metadata/images.js';
 import {
   buildOrderBy,
   buildPage,
@@ -26,6 +27,27 @@ interface LibraryRow {
   id: string;
   label: string;
   type: 'movie' | 'show';
+}
+
+/**
+ * La base stocke le chemin TMDB brut (« /abc.jpg »). L'API le transforme en URL
+ * servie localement — l'image a été rapatriée par `npm run metadata`, on ne
+ * renvoie jamais le navigateur vers TMDB.
+ */
+function imageUrl(tmdbPath: unknown, kind: ImageKind): string | null {
+  return typeof tmdbPath === 'string' && tmdbPath !== '' ? publicImagePath(tmdbPath, kind) : null;
+}
+
+/** Applique `imageUrl` aux champs d'image d'une ligne de résultat. */
+function withImages<T extends Record<string, unknown>>(
+  row: T,
+  mapping: Partial<Record<'posterPath' | 'backdropPath' | 'stillPath', ImageKind>>,
+): T {
+  const result = { ...row };
+  for (const [field, kind] of Object.entries(mapping)) {
+    result[field as keyof T] = imageUrl(row[field], kind as ImageKind) as T[keyof T];
+  }
+  return result;
 }
 
 /** Ne garde que les fichiers encore présents sur le disque. */
@@ -78,15 +100,18 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
       total: number;
     };
 
-    const items = db
-      .prepare(
-        `SELECT id, library_id AS libraryId, title, year, poster_path AS posterPath, added_at AS addedAt,
-                (SELECT COUNT(*) FROM media_file f WHERE f.movie_id = movie.id AND f.present = 1) AS fileCount
-         FROM movie ${whereSql}
-         ORDER BY ${buildOrderBy(sort, order)}
-         LIMIT ? OFFSET ?`,
-      )
-      .all(...allParameters, PAGE_SIZE, (page - 1) * PAGE_SIZE);
+    const items = (
+      db
+        .prepare(
+          `SELECT id, library_id AS libraryId, title, year, poster_path AS posterPath, added_at AS addedAt,
+                  vote_average AS voteAverage, runtime,
+                  (SELECT COUNT(*) FROM media_file f WHERE f.movie_id = movie.id AND f.present = 1) AS fileCount
+           FROM movie ${whereSql}
+           ORDER BY ${buildOrderBy(sort, order)}
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...allParameters, PAGE_SIZE, (page - 1) * PAGE_SIZE) as Record<string, unknown>[]
+    ).map((row) => withImages(row, { posterPath: 'posterSmall' }));
 
     return buildPage(items, page, total);
   });
@@ -99,13 +124,22 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
 
     const movie = db
       .prepare(
-        `SELECT id, library_id AS libraryId, title, year, overview, poster_path AS posterPath,
-                backdrop_path AS backdropPath, added_at AS addedAt
+        `SELECT id, library_id AS libraryId, title, year, overview, tagline, poster_path AS posterPath,
+                backdrop_path AS backdropPath, added_at AS addedAt, tmdb_id AS tmdbId,
+                release_date AS releaseDate, runtime, vote_average AS voteAverage,
+                original_title AS originalTitle
          FROM movie WHERE id = ?`,
       )
-      .get(id);
+      .get(id) as Record<string, unknown> | undefined;
 
     if (movie === undefined) return reply.code(404).send({ error: 'Film introuvable' });
+
+    const genres = db
+      .prepare(
+        `SELECT g.id, g.name FROM genre g
+         JOIN movie_genre mg ON mg.genre_id = g.id WHERE mg.movie_id = ? ORDER BY g.name`,
+      )
+      .all(id);
 
     const files = db
       .prepare(
@@ -125,7 +159,8 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
     );
 
     return {
-      ...movie,
+      ...withImages(movie, { posterPath: 'posterLarge', backdropPath: 'backdrop' }),
+      genres,
       files: files.map((file) => ({ ...file, subtitles: subtitles.all(file.id) })),
     };
   });
@@ -155,20 +190,23 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
       total: number;
     };
 
-    const items = db
-      .prepare(
-        `SELECT id, library_id AS libraryId, title, year, poster_path AS posterPath, added_at AS addedAt,
-                (SELECT COUNT(DISTINCT e.season_number) FROM episode e
-                   JOIN media_file f ON f.episode_id = e.id AND f.present = 1
-                  WHERE e.show_id = show.id) AS seasonCount,
-                (SELECT COUNT(DISTINCT e.id) FROM episode e
-                   JOIN media_file f ON f.episode_id = e.id AND f.present = 1
-                  WHERE e.show_id = show.id) AS episodeCount
-         FROM show ${whereSql}
-         ORDER BY ${buildOrderBy(sort, order)}
-         LIMIT ? OFFSET ?`,
-      )
-      .all(...allParameters, PAGE_SIZE, (page - 1) * PAGE_SIZE);
+    const items = (
+      db
+        .prepare(
+          `SELECT id, library_id AS libraryId, title, year, poster_path AS posterPath, added_at AS addedAt,
+                  vote_average AS voteAverage, status,
+                  (SELECT COUNT(DISTINCT e.season_number) FROM episode e
+                     JOIN media_file f ON f.episode_id = e.id AND f.present = 1
+                    WHERE e.show_id = show.id) AS seasonCount,
+                  (SELECT COUNT(DISTINCT e.id) FROM episode e
+                     JOIN media_file f ON f.episode_id = e.id AND f.present = 1
+                    WHERE e.show_id = show.id) AS episodeCount
+           FROM show ${whereSql}
+           ORDER BY ${buildOrderBy(sort, order)}
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...allParameters, PAGE_SIZE, (page - 1) * PAGE_SIZE) as Record<string, unknown>[]
+    ).map((row) => withImages(row, { posterPath: 'posterSmall' }));
 
     return buildPage(items, page, total);
   });
@@ -182,39 +220,66 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
     const show = db
       .prepare(
         `SELECT id, library_id AS libraryId, title, year, overview, poster_path AS posterPath,
-                backdrop_path AS backdropPath, added_at AS addedAt
+                backdrop_path AS backdropPath, added_at AS addedAt, tmdb_id AS tmdbId,
+                first_air_date AS firstAirDate, status, number_of_seasons AS numberOfSeasons,
+                vote_average AS voteAverage, original_title AS originalTitle
          FROM show WHERE id = ?`,
       )
-      .get(id);
+      .get(id) as Record<string, unknown> | undefined;
 
     if (show === undefined) return reply.code(404).send({ error: 'Série introuvable' });
 
-    const episodes = db
+    const genres = db
       .prepare(
-        `SELECT e.id, e.season_number AS seasonNumber, e.episode_number AS episodeNumber,
-                e.episode_number_end AS episodeNumberEnd, e.title, e.overview,
-                COUNT(f.id) AS fileCount
-         FROM episode e
-         JOIN media_file f ON f.episode_id = e.id AND f.present = 1
-         WHERE e.show_id = ?
-         GROUP BY e.id
-         ORDER BY e.season_number, e.episode_number`,
+        `SELECT g.id, g.name FROM genre g
+         JOIN show_genre sg ON sg.genre_id = g.id WHERE sg.show_id = ? ORDER BY g.name`,
       )
-      .all(id) as { seasonNumber: number }[];
+      .all(id);
 
-    const seasonTitles = db
-      .prepare('SELECT season_number AS seasonNumber, title FROM season WHERE show_id = ?')
-      .all(id) as { seasonNumber: number; title: string | null }[];
-    const titleByNumber = new Map(seasonTitles.map((row) => [row.seasonNumber, row.title]));
+    const episodes = (
+      db
+        .prepare(
+          `SELECT e.id, e.season_number AS seasonNumber, e.episode_number AS episodeNumber,
+                  e.episode_number_end AS episodeNumberEnd, e.title, e.overview,
+                  e.still_path AS stillPath, e.air_date AS airDate, e.runtime,
+                  COUNT(f.id) AS fileCount
+           FROM episode e
+           JOIN media_file f ON f.episode_id = e.id AND f.present = 1
+           WHERE e.show_id = ?
+           GROUP BY e.id
+           ORDER BY e.season_number, e.episode_number`,
+        )
+        .all(id) as Record<string, unknown>[]
+    ).map((row) => withImages(row, { stillPath: 'still' })) as unknown as { seasonNumber: number }[];
+
+    const seasonRows = db
+      .prepare(
+        `SELECT season_number AS seasonNumber, title, overview, poster_path AS posterPath, air_date AS airDate
+         FROM season WHERE show_id = ?`,
+      )
+      .all(id) as { seasonNumber: number; title: string | null; overview: string | null; posterPath: string | null; airDate: string | null }[];
+    const seasonByNumber = new Map(seasonRows.map((row) => [row.seasonNumber, row]));
 
     // Regroupement en saisons côté serveur : le front reçoit l'arbre déjà prêt.
-    const seasons: { seasonNumber: number; title: string | null; episodes: unknown[] }[] = [];
+    const seasons: {
+      seasonNumber: number;
+      title: string | null;
+      overview: string | null;
+      posterPath: string | null;
+      airDate: string | null;
+      episodes: unknown[];
+    }[] = [];
+
     for (const episode of episodes) {
       let season = seasons.at(-1);
       if (season === undefined || season.seasonNumber !== episode.seasonNumber) {
+        const info = seasonByNumber.get(episode.seasonNumber);
         season = {
           seasonNumber: episode.seasonNumber,
-          title: titleByNumber.get(episode.seasonNumber) ?? null,
+          title: info?.title ?? null,
+          overview: info?.overview ?? null,
+          posterPath: imageUrl(info?.posterPath, 'posterSmall'),
+          airDate: info?.airDate ?? null,
           episodes: [],
         };
         seasons.push(season);
@@ -222,6 +287,6 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
       season.episodes.push(episode);
     }
 
-    return { ...show, seasons };
+    return { ...withImages(show, { posterPath: 'posterLarge', backdropPath: 'backdrop' }), genres, seasons };
   });
 }
