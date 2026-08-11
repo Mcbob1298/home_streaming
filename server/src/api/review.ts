@@ -9,7 +9,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import type { Db } from '../db/index.js';
 import { applyTmdbId, ignoreWork, type EnrichContext } from '../metadata/enrich.js';
-import { publicImagePath } from '../metadata/images.js';
+import { defaultImagePath } from '../metadata/images.js';
 import type { ScoredCandidate } from '../metadata/match.js';
 import {
   fetchById,
@@ -58,7 +58,7 @@ function decorateEntry(entry: ReviewEntry, position: number, total: number): unk
     total,
     candidates: entry.candidates.map((candidate) => decorateCandidate(candidate, entry.type)),
     currentPosterUrl:
-      entry.currentPosterPath === null ? null : publicImagePath(entry.currentPosterPath, 'posterSmall'),
+      entry.currentPosterPath === null ? null : defaultImagePath(entry.currentPosterPath, 'poster'),
   };
 }
 

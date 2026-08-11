@@ -11,7 +11,7 @@ import { openDatabase, syncLibrariesFromConfig, type Db } from '../db/index.js';
 import { indexLibrary } from '../scan/indexer.js';
 import type { WalkedFile } from '../scan/walk.js';
 import { ignoreWork } from './enrich.js';
-import { isManuallyResolved, recordMatch } from './store.js';
+import { isManuallyResolved, manualDecision, recordMatch } from './store.js';
 import { nextInQueue, parseReviewKey, reviewEntry, reviewQueue, reviewQueueKeys } from './review.js';
 
 const LIBRARY: LibraryConfig = { id: 'films', label: 'Films', type: 'movie', paths: ['R:\\films'] };
@@ -129,6 +129,20 @@ describe('persistance des décisions', () => {
       decided_at: string | null;
     };
     expect(row.decided_at).not.toBeNull();
+  });
+
+  it('conserve l’identifiant choisi pour permettre un ré-enrichissement', () => {
+    // La protection fige QUEL identifiant, pas le droit de rafraîchir ses
+    // métadonnées : sans ça, une œuvre triée à la main resterait à jamais
+    // privée des champs ajoutés par les passes suivantes — les logos, par ex.
+    const id = putMatch('Flow', 'applied', true);
+    const decision = manualDecision(db, 'movie', id);
+    expect(decision).toEqual({ status: 'applied', tmdbId: 111 });
+  });
+
+  it('ne rend aucune décision pour un appariement automatique', () => {
+    const id = putMatch('Flow', 'applied', false);
+    expect(manualDecision(db, 'movie', id)).toBeNull();
   });
 
   it('retire définitivement une entrée ignorée de la file', () => {

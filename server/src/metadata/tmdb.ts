@@ -20,6 +20,8 @@ import { mkdirSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import type { TmdbContentRatings, TmdbReleaseDates } from './certification.js';
+import type { TmdbCreatedBy, TmdbCredits } from './credits.js';
 import { sleep } from '../util/concurrency.js';
 
 const BASE_URL = 'https://api.themoviedb.org/3';
@@ -226,6 +228,16 @@ export interface TmdbGenre {
   name: string;
 }
 
+/**
+ * Bloc `images` renvoyé par `append_to_response=images`.
+ *
+ * Combiné à la requête de détail, il évite un appel supplémentaire par œuvre.
+ * Le paramètre `include_image_language` filtre les langues côté serveur.
+ */
+export interface TmdbImages {
+  logos?: { file_path?: string; iso_639_1?: string | null; vote_average?: number; width?: number }[];
+}
+
 export interface TmdbMovieDetails {
   id: number;
   title?: string;
@@ -240,6 +252,11 @@ export interface TmdbMovieDetails {
   genres?: TmdbGenre[];
   /** Rempli par `append_to_response=translations`, pour le repli en anglais. */
   translations?: { translations?: { iso_639_1?: string; data?: { overview?: string; tagline?: string } }[] };
+  images?: TmdbImages;
+  /** Rempli par `append_to_response=credits`. */
+  credits?: TmdbCredits;
+  /** Rempli par `append_to_response=release_dates` : porte la classification. */
+  release_dates?: TmdbReleaseDates;
 }
 
 export interface TmdbShowDetails {
@@ -256,6 +273,16 @@ export interface TmdbShowDetails {
   genres?: TmdbGenre[];
   seasons?: { season_number?: number; id?: number; name?: string; overview?: string; air_date?: string; poster_path?: string | null }[];
   translations?: { translations?: { iso_639_1?: string; data?: { overview?: string } }[] };
+  images?: TmdbImages;
+  credits?: TmdbCredits;
+  /**
+   * Créateurs de la série. Ils sont à la racine du détail, PAS dans `credits` :
+   * une série n'a pas de réalisateur au sens d'un film, et TMDB traite donc la
+   * paternité à part.
+   */
+  created_by?: TmdbCreatedBy[];
+  /** Rempli par `append_to_response=content_ratings`. */
+  content_ratings?: TmdbContentRatings;
 }
 
 export interface TmdbSeasonDetails {

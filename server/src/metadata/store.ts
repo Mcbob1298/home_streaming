@@ -1,6 +1,7 @@
 /** Écriture des métadonnées TMDB en base. */
 import type { Db } from '../db/index.js';
 import { nowIso } from '../db/index.js';
+import type { SelectedCredit } from './credits.js';
 import type { ScoredCandidate } from './match.js';
 import type { TmdbGenre, TmdbMovieDetails, TmdbSeasonDetails, TmdbShowDetails } from './tmdb.js';
 
@@ -75,11 +76,35 @@ export function fingerprintOf(row: WorkRow): string {
  * silencieusement le travail de tri fait dans l'écran de review.
  */
 export function isManuallyResolved(db: Db, type: TargetType, id: number): boolean {
+  const decision = manualDecision(db, type, id);
+  return decision !== null;
+}
+
+export interface ManualDecision {
+  status: MatchStatus;
+  tmdbId: number | null;
+}
+
+/**
+ * La décision humaine prise sur cette œuvre, s'il y en a une.
+ *
+ * Distinction essentielle, apprise à nos dépens : une décision manuelle fige
+ * QUEL identifiant TMDB utiliser, pas le fait de rafraîchir ses métadonnées.
+ * Une protection trop large avait privé les 62 œuvres triées à la main de leur
+ * logo de titre, la passe suivante les ayant purement et simplement sautées.
+ *
+ * Seul « ignored » justifie de ne rien faire du tout.
+ */
+export function manualDecision(db: Db, type: TargetType, id: number): ManualDecision | null {
   const row = db
-    .prepare('SELECT status, manually_matched FROM tmdb_match WHERE target_type = ? AND target_id = ?')
-    .get(type, id) as { status: MatchStatus; manually_matched: number } | undefined;
-  if (row === undefined) return false;
-  return row.status === 'ignored' || row.manually_matched === 1;
+    .prepare(
+      'SELECT status, tmdb_id, manually_matched FROM tmdb_match WHERE target_type = ? AND target_id = ?',
+    )
+    .get(type, id) as { status: MatchStatus; tmdb_id: number | null; manually_matched: number } | undefined;
+
+  if (row === undefined) return null;
+  if (row.status !== 'ignored' && row.manually_matched !== 1) return null;
+  return { status: row.status, tmdbId: row.tmdb_id };
 }
 
 export interface RecordMatchInput {
@@ -149,10 +174,58 @@ function saveGenres(db: Db, type: TargetType, id: number, genres: TmdbGenre[] | 
   }
 }
 
+/**
+ * Réécrit les crédits d'une œuvre.
+ *
+ * Remplacement complet plutôt que fusion : si TMDB corrige une distribution, la
+ * fiche doit refléter la correction, pas cumuler l'ancienne et la nouvelle.
+ *
+ * Les personnes, elles, sont conservées et mises à jour — la même actrice
+ * revient sur vingt films, et son nom n'a pas à être réécrit vingt fois avec
+ * une valeur différente selon la dernière œuvre traitée.
+ */
+export function saveCredits(db: Db, type: TargetType, workId: number, credits: SelectedCredit[]): void {
+  const upsertPerson = db.prepare(
+    `INSERT INTO person (tmdb_id, name, profile_path) VALUES (?, ?, ?)
+     ON CONFLICT(tmdb_id) DO UPDATE SET
+       name = excluded.name,
+       -- Un profil connu ne doit pas être effacé par une source qui l'ignore.
+       profile_path = COALESCE(excluded.profile_path, person.profile_path)`,
+  );
+  const clear = db.prepare('DELETE FROM credit WHERE work_type = ? AND work_id = ?');
+  const insert = db.prepare(
+    `INSERT INTO credit (work_id, work_type, person_id, role, character, department, credit_order)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(work_type, work_id, person_id, role) DO NOTHING`,
+  );
+
+  const run = db.transaction(() => {
+    clear.run(type, workId);
+    for (const credit of credits) {
+      upsertPerson.run(credit.personId, credit.name, credit.profilePath);
+      insert.run(
+        workId,
+        type,
+        credit.personId,
+        credit.role,
+        credit.character,
+        credit.department,
+        credit.order,
+      );
+    }
+  });
+
+  run();
+}
+
 export interface MovieMetadata {
   details: TmdbMovieDetails;
   overview: string | null;
   tagline: string | null;
+  /** Logo du titre, ou null si TMDB n'en propose aucun. */
+  logoPath: string | null;
+  /** Classification par âge, ou null si aucun pays retenu n'en publie. */
+  certification: string | null;
 }
 
 export function saveMovieMetadata(db: Db, movieId: number, data: MovieMetadata): void {
@@ -166,10 +239,12 @@ export function saveMovieMetadata(db: Db, movieId: number, data: MovieMetadata):
          tagline        = @tagline,
          poster_path    = @poster_path,
          backdrop_path  = @backdrop_path,
+         logo_path      = @logo_path,
          release_date   = @release_date,
          runtime        = @runtime,
          vote_average   = @vote_average,
          original_title = @original_title,
+         certification  = @certification,
          updated_at     = @updated_at
        WHERE id = @id`,
     ).run({
@@ -177,8 +252,10 @@ export function saveMovieMetadata(db: Db, movieId: number, data: MovieMetadata):
       tmdb_id: details.id,
       overview: data.overview,
       tagline: data.tagline,
+      certification: data.certification,
       poster_path: details.poster_path ?? null,
       backdrop_path: details.backdrop_path ?? null,
+      logo_path: data.logoPath,
       release_date: details.release_date ?? null,
       runtime: details.runtime ?? null,
       vote_average: details.vote_average ?? null,
@@ -197,6 +274,10 @@ export interface ShowMetadata {
   overview: string | null;
   /** Saisons détaillées, indexées par numéro de saison. */
   seasons: Map<number, TmdbSeasonDetails>;
+  /** Logo du titre, ou null si TMDB n'en propose aucun. */
+  logoPath: string | null;
+  /** Classification par âge, ou null si aucun pays retenu n'en publie. */
+  certification: string | null;
 }
 
 /**
@@ -216,19 +297,23 @@ export function saveShowMetadata(db: Db, showId: number, data: ShowMetadata): vo
          overview          = @overview,
          poster_path       = @poster_path,
          backdrop_path     = @backdrop_path,
+         logo_path         = @logo_path,
          first_air_date    = @first_air_date,
          status            = @status,
          number_of_seasons = @number_of_seasons,
          vote_average      = @vote_average,
          original_title    = @original_title,
+         certification     = @certification,
          updated_at        = @updated_at
        WHERE id = @id`,
     ).run({
       id: showId,
       tmdb_id: details.id,
       overview: data.overview,
+      certification: data.certification,
       poster_path: details.poster_path ?? null,
       backdrop_path: details.backdrop_path ?? null,
+      logo_path: data.logoPath,
       first_air_date: details.first_air_date ?? null,
       status: details.status ?? null,
       number_of_seasons: details.number_of_seasons ?? null,

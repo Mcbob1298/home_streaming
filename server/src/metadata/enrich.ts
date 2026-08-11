@@ -6,7 +6,10 @@
  */
 import type { Db } from '../db/index.js';
 import type { JobOutcome } from '../jobs/runner.js';
+import { pickMovieCertification, pickShowCertification } from './certification.js';
+import { selectMovieCredits, selectShowCredits } from './credits.js';
 import type { ImageDownloader } from './images.js';
+import { pickLogo } from './logo.js';
 import {
   CONFIDENCE_THRESHOLD,
   matchResults,
@@ -18,8 +21,9 @@ import {
 import {
   getWork,
   hasPresentFiles,
-  isManuallyResolved,
+  manualDecision,
   recordMatch,
+  saveCredits,
   saveMovieMetadata,
   saveShowMetadata,
   seasonNumbersOf,
@@ -42,10 +46,25 @@ const LANGUAGE = 'fr-FR';
 /**
  * TMDB peut regrouper jusqu'à 20 sous-requêtes dans un seul appel via
  * `append_to_response`. On y met les traductions, qui servent au repli en
- * anglais quand le synopsis français est vide.
+ * anglais quand le synopsis français est vide, les images pour le logo de
+ * titre, et les crédits pour la réalisation et la distribution.
+ *
+ * Ces trois blocs ne coûtent aucune requête supplémentaire, et les réponses
+ * déjà en cache sont invalidées d'elles-mêmes : l'URL change, donc la clé de
+ * cache aussi.
  */
-const MOVIE_APPEND = 'translations';
-const SHOW_APPEND = 'translations';
+const MOVIE_APPEND = 'translations,images,credits,release_dates';
+const SHOW_APPEND = 'translations,images,credits,content_ratings';
+
+/**
+ * Langues de logos demandées à TMDB.
+ *
+ * `null` inclut les logos sans langue déclarée — fréquents et souvent les
+ * meilleurs, le graphisme d'un titre ne contenant pas toujours de mot
+ * traduisible. Sans ce paramètre, TMDB ne renverrait que la langue de la
+ * requête et la couverture s'effondrerait.
+ */
+const IMAGE_LANGUAGES = 'fr,en,null';
 
 export interface EnrichContext {
   db: Db;
@@ -162,16 +181,21 @@ async function enrichMovie(context: EnrichContext, movieId: number, tmdbId: numb
   const details = await context.client.get<TmdbMovieDetails>(`/movie/${tmdbId}`, {
     language: LANGUAGE,
     append_to_response: MOVIE_APPEND,
+    include_image_language: IMAGE_LANGUAGES,
   });
 
   // TMDB renvoie une chaîne VIDE, pas null, quand la traduction manque.
   const overview = nonEmpty(details.overview) ?? fallbackOverview(details.translations);
   const tagline = nonEmpty(details.tagline);
+  const logoPath = pickLogo(details.images?.logos);
+  const certification = pickMovieCertification(details.release_dates);
 
-  saveMovieMetadata(context.db, movieId, { details, overview, tagline });
+  saveMovieMetadata(context.db, movieId, { details, overview, tagline, logoPath, certification });
+  saveCredits(context.db, 'movie', movieId, selectMovieCredits(details));
 
-  await context.images.fetchPoster(details.poster_path);
-  await context.images.fetchOne(details.backdrop_path, 'backdrop');
+  await context.images.fetchAll(details.poster_path, 'poster');
+  await context.images.fetchAll(details.backdrop_path, 'backdrop');
+  await context.images.fetchAll(logoPath, 'logo');
 }
 
 async function enrichShow(context: EnrichContext, showId: number, tmdbId: number): Promise<void> {
@@ -190,6 +214,7 @@ async function enrichShow(context: EnrichContext, showId: number, tmdbId: number
   const details = await context.client.get<TmdbShowDetails & Record<string, unknown>>(`/tv/${tmdbId}`, {
     language: LANGUAGE,
     append_to_response: append,
+    include_image_language: IMAGE_LANGUAGES,
   });
 
   const seasons = new Map<number, TmdbSeasonDetails>();
@@ -205,14 +230,18 @@ async function enrichShow(context: EnrichContext, showId: number, tmdbId: number
   }
 
   const overview = nonEmpty(details.overview) ?? fallbackOverview(details.translations);
-  saveShowMetadata(context.db, showId, { details, overview, seasons });
+  const logoPath = pickLogo(details.images?.logos);
+  const certification = pickShowCertification(details.content_ratings);
+  saveShowMetadata(context.db, showId, { details, overview, seasons, logoPath, certification });
+  saveCredits(context.db, 'show', showId, selectShowCredits(details));
 
-  await context.images.fetchPoster(details.poster_path);
-  await context.images.fetchOne(details.backdrop_path, 'backdrop');
+  await context.images.fetchAll(details.poster_path, 'poster');
+  await context.images.fetchAll(details.backdrop_path, 'backdrop');
+  await context.images.fetchAll(logoPath, 'logo');
   for (const season of seasons.values()) {
-    await context.images.fetchOne(season.poster_path, 'posterSmall');
+    await context.images.fetchAll(season.poster_path, 'poster');
     for (const episode of season.episodes ?? []) {
-      await context.images.fetchOne(episode.still_path, 'still');
+      await context.images.fetchAll(episode.still_path, 'still');
     }
   }
 }
@@ -274,9 +303,21 @@ export async function enrichWork(context: EnrichContext, type: TargetType, id: n
     return { status: 'skipped', reason: 'plus aucun fichier sur le disque' };
   }
 
-  // Une décision prise à la main ne doit pas être défaite par une passe automatique.
-  if (isManuallyResolved(context.db, type, id)) {
-    return { status: 'skipped', reason: 'ignorée à la demande', decision: 'ignored' };
+  /*
+   * Une décision humaine fige QUEL identifiant TMDB utiliser — pas le fait de
+   * rafraîchir ses métadonnées. On saute donc la recherche, mais on relance
+   * l'enrichissement sur l'identifiant choisi : c'est ainsi que les œuvres
+   * triées à la main profitent des passes suivantes, logos compris.
+   *
+   * Seule une entrée volontairement ignorée n'est pas touchée du tout.
+   */
+  const decision = manualDecision(context.db, type, id);
+  if (decision !== null) {
+    if (decision.status === 'ignored' || decision.tmdbId === null) {
+      return { status: 'skipped', reason: 'ignorée à la demande', decision: 'ignored' };
+    }
+    await applyTmdbId(context, type, id, decision.tmdbId);
+    return { status: 'done', decision: 'applied' };
   }
 
   const query: MatchQuery = { title: work.title, year: work.year };

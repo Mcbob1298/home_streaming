@@ -1,94 +1,117 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { useState } from 'react';
+import { useParams } from 'react-router-dom';
 
 import { api } from '../api';
-import { Poster } from '../components/Poster';
+import {
+  DetailBackdrop,
+  ICONS,
+  MetaLine,
+  PlayButton,
+  RoundButton,
+  Synopsis,
+  Tabs,
+  formatMinutes,
+  type TabKey,
+} from '../components/DetailChrome';
+import { DetailsPanel, resolutionLabel, type Fact } from '../components/DetailsPanel';
 import { ErrorMessage, Loading } from '../components/States';
+import { SuggestionsRow } from '../components/SuggestionsRow';
+import { shortSynopsis } from '../synopsis';
 
-function formatSize(bytes: number): string {
-  const gigabytes = bytes / 1024 ** 3;
-  if (gigabytes >= 1) return `${gigabytes.toFixed(2)} Go`;
-  return `${Math.round(bytes / 1024 ** 2)} Mo`;
-}
-
-/**
- * Page détail d'un film.
- *
- * Un film peut avoir plusieurs fichiers : version longue et version cinéma, ou
- * le même film présent sur les deux racines du NAS. On les liste tous, avec
- * leurs sous-titres.
- */
 export function MoviePage() {
   const { id = '' } = useParams();
-  const { data, isPending, error } = useQuery({ queryKey: ['movie', id], queryFn: () => api.movie(id) });
+  const [tab, setTab] = useState<TabKey>('suggestions');
 
-  if (isPending) return <Loading />;
-  if (error !== null) return <ErrorMessage error={error} />;
+  const movie = useQuery({ queryKey: ['movie', id], queryFn: () => api.movie(id) });
+
+  if (movie.isPending) return <Loading />;
+  if (movie.error !== null) return <ErrorMessage error={movie.error} />;
+
+  const data = movie.data;
+  const genreNames = data.genres.map((genre) => genre.name);
+  const definition = data.fileSummary.resolutions[0];
+
+  const facts: Fact[] = [
+    { label: 'Durée', value: formatMinutes(data.runtime) },
+    { label: 'Date de sortie', value: formatDate(data.releaseDate) },
+    { label: 'Genre', value: genreNames.length === 0 ? null : genreNames.join(', ') },
+    { label: 'Classification', value: data.certification },
+  ];
 
   return (
-    <article>
-      <header className="flex flex-col gap-6 sm:flex-row">
-        <div className="aspect-[2/3] w-40 shrink-0 overflow-hidden rounded-lg border border-zinc-800">
-          <Poster title={data.title} posterPath={data.posterPath} />
+    <div className="relative min-h-screen">
+      <DetailBackdrop url={data.backdropPath} srcSet={data.backdropSrcSet} />
+
+      <div className="relative z-[1]">
+        <header className="w-[600px] max-w-[calc(100%-8rem)] pt-[290px] pl-16">
+          {data.originalTitle !== null && data.originalTitle !== data.title && (
+            <div className="mb-2 text-[12px] font-semibold tracking-[0.42em] text-[rgba(249,249,249,0.6)] uppercase">
+              {data.originalTitle}
+            </div>
+          )}
+
+          {data.logoPath !== null ? (
+            <img
+              src={data.logoPath}
+              srcSet={data.logoSrcSet ?? undefined}
+              sizes="(max-width: 768px) 70vw, 440px"
+              alt={data.title}
+              className="max-h-[120px] max-w-full object-contain object-left drop-shadow-[0_4px_30px_rgba(0,0,0,0.6)]"
+            />
+          ) : (
+            <h1 className="text-[74px] leading-[0.94] font-bold tracking-[0.04em] uppercase">{data.title}</h1>
+          )}
+
+          <MetaLine
+            parts={[
+              data.year === null ? null : String(data.year),
+              genreNames.slice(0, 3).join(', ') || null,
+              formatMinutes(data.runtime),
+              definition === undefined ? null : resolutionLabel(definition),
+              data.certification,
+              data.voteAverage === null ? null : `${data.voteAverage.toFixed(1)} / 10`,
+            ]}
+          />
+
+          {/* Une phrase, pas un pavé : le synopsis entier est dans Détails. */}
+          {shortSynopsis(data.overview) !== null && <Synopsis text={shortSynopsis(data.overview) as string} />}
+
+          <div className="mt-[30px] flex items-center gap-4">
+            <PlayButton />
+            <div className="flex gap-3">
+              <RoundButton label="Ajouter à ma liste">{ICONS.plus}</RoundButton>
+              <RoundButton label="Partager">{ICONS.share}</RoundButton>
+            </div>
+          </div>
+        </header>
+
+        {/* Onglets posés sur l'image, comme sur la fiche série. */}
+        <div className="mt-[90px]">
+          <Tabs tabs={['suggestions', 'details']} active={tab} onChange={setTab} />
         </div>
-        <div className="min-w-0">
-          <Link to={`/library/${data.libraryId}`} className="text-xs text-zinc-500 hover:text-zinc-300">
-            ← Retour à la bibliothèque
-          </Link>
-          <h1 className="mt-2 text-2xl font-semibold text-zinc-100">{data.title}</h1>
-          <p className="mt-1 text-sm text-zinc-500">{data.year ?? 'année inconnue'}</p>
-          {data.overview !== null && <p className="mt-4 max-w-2xl text-sm text-zinc-400">{data.overview}</p>}
 
-          {/*
-            Une association automatique peut être fausse sans que rien ne le
-            signale : deux homonymes se valent à 1,00 de confiance. Ce bouton
-            est le seul moyen de rattraper une mauvaise affiche repérée dans la
-            grille.
-          */}
-          <Link
-            to={`/review?work=movie-${data.id}`}
-            className="mt-4 inline-block rounded-md border border-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-200"
-          >
-            Corriger l’association
-          </Link>
-        </div>
-      </header>
-
-      <section className="mt-10">
-        <h2 className="mb-3 text-sm font-medium tracking-wide text-zinc-300 uppercase">
-          Fichiers
-          <span className="ml-2 text-zinc-600 normal-case">{data.files.length}</span>
-        </h2>
-
-        <ul className="space-y-3">
-          {data.files.map((file) => (
-            <li key={file.id} className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
-              <p className="text-sm break-all text-zinc-200">{file.fileName}</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                {formatSize(file.sizeBytes)} · {file.extension.replace('.', '')}
-              </p>
-              <p className="mt-1 text-xs break-all text-zinc-600">{file.rootPath}</p>
-
-              {file.subtitles.length > 0 && (
-                <ul className="mt-3 flex flex-wrap gap-2">
-                  {file.subtitles.map((subtitle) => (
-                    <li
-                      key={subtitle.id}
-                      className="rounded border border-zinc-800 px-2 py-0.5 text-xs text-zinc-400"
-                      title={subtitle.fileName}
-                    >
-                      {subtitle.language ?? '??'}
-                      {subtitle.forced === 1 && ' · forcé'}
-                      {subtitle.hearingImpaired === 1 && ' · SM'}
-                      <span className="text-zinc-600"> ({subtitle.format})</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
-    </article>
+        {tab === 'suggestions' ? (
+          <SuggestionsRow genreName={genreNames[0] ?? null} currentId={data.id} kind="movie" />
+        ) : (
+          <DetailsPanel
+            title={data.title}
+            overview={data.overview}
+            left={facts}
+            credits={data.credits}
+            fileSummary={data.fileSummary}
+            reviewKey={`movie-${data.id}`}
+          />
+        )}
+      </div>
+    </div>
   );
+}
+
+/** « 2009-12-15 » → « 15 décembre 2009 ». */
+export function formatDate(value: string | null): string | null {
+  if (value === null || value === '') return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 }

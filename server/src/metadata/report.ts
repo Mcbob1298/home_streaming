@@ -101,6 +101,8 @@ export function buildMetadataReport(db: Db, input: MetadataReportInput): string 
          (SELECT COUNT(*) FROM movie WHERE tmdb_id IS NOT NULL) AS films_apparies,
          (SELECT COUNT(*) FROM movie WHERE overview IS NOT NULL) AS films_synopsis,
          (SELECT COUNT(*) FROM movie WHERE poster_path IS NOT NULL) AS films_affiche,
+         (SELECT COUNT(*) FROM movie WHERE logo_path IS NOT NULL) AS films_logo,
+         (SELECT COUNT(*) FROM show WHERE logo_path IS NOT NULL) AS series_logo,
          (SELECT COUNT(*) FROM show WHERE tmdb_id IS NOT NULL) AS series_appariees,
          (SELECT COUNT(*) FROM show WHERE poster_path IS NOT NULL) AS series_affiche,
          (SELECT COUNT(*) FROM episode WHERE tmdb_id IS NOT NULL) AS episodes_apparies,
@@ -131,13 +133,119 @@ export function buildMetadataReport(db: Db, input: MetadataReportInput): string 
   out.push(`  épisodes avec synopsis        ${String(coverage.episodes_synopsis).padStart(5)} / ${totals.episodes}`);
   out.push(`  épisodes avec vignette        ${String(coverage.episodes_vignette).padStart(5)} / ${totals.episodes}`);
 
+  /*
+   * Le logo de titre remplace le titre en texte sur les vignettes. Sans lui
+   * l'interface perd son identité visuelle, donc ce taux compte : chaque œuvre
+   * qui en manque affichera un repli textuel.
+   */
+  // `coverage` est un Record, donc chaque accès est potentiellement absent.
+  const count = (key: string): number => coverage[key] ?? 0;
+
+  const filmsAppariés = count('films_apparies');
+  const seriesAppariées = count('series_appariees');
+  const filmsLogo = count('films_logo');
+  const seriesLogo = count('series_logo');
+
+  out.push('');
+  out.push(
+    `  films avec logo de titre      ${String(filmsLogo).padStart(5)} / ${filmsAppariés}` +
+      `   ${percent(filmsLogo, filmsAppariés)} des films appariés`,
+  );
+  out.push(
+    `  séries avec logo de titre     ${String(seriesLogo).padStart(5)} / ${seriesAppariées}` +
+      `   ${percent(seriesLogo, seriesAppariées)} des séries appariées`,
+  );
+  out.push(
+    `  -> ${filmsAppariés + seriesAppariées - filmsLogo - seriesLogo}` +
+      ` œuvre(s) afficheront leur titre en texte.`,
+  );
+
+  /*
+   * Couverture des crédits.
+   *
+   * Le dénominateur est le nombre d'œuvres APPARIÉES, pas le nombre d'œuvres :
+   * une œuvre sans identifiant TMDB n'a jamais eu l'occasion d'avoir des
+   * crédits, la compter comme un manque ferait passer un problème
+   * d'appariement pour un problème de crédits.
+   */
+  const credits = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(DISTINCT work_id) FROM credit WHERE work_type = 'movie' AND role = 'director')  AS films_realisation,
+         (SELECT COUNT(DISTINCT work_id) FROM credit WHERE work_type = 'movie' AND role = 'cast')      AS films_distribution,
+         (SELECT COUNT(DISTINCT work_id) FROM credit WHERE work_type = 'show'  AND role = 'creator')   AS series_creation,
+         (SELECT COUNT(DISTINCT work_id) FROM credit WHERE work_type = 'show'  AND role = 'cast')      AS series_distribution,
+         (SELECT COUNT(*) FROM person)                                                                 AS personnes,
+         (SELECT COUNT(*) FROM credit)                                                                 AS lignes,
+         (SELECT COUNT(*) FROM movie WHERE certification IS NOT NULL)                                  AS films_classification,
+         (SELECT COUNT(*) FROM show  WHERE certification IS NOT NULL)                                  AS series_classification`,
+    )
+    .get() as Record<string, number>;
+
+  const creditCount = (key: string): number => credits[key] ?? 0;
+
+  out.push('');
+  out.push(line());
+  out.push('CRÉDITS');
+  out.push(line());
+  out.push(
+    `  films avec réalisation        ${String(creditCount('films_realisation')).padStart(5)} / ${filmsAppariés}` +
+      `   ${percent(creditCount('films_realisation'), filmsAppariés)}`,
+  );
+  out.push(
+    `  films avec distribution       ${String(creditCount('films_distribution')).padStart(5)} / ${filmsAppariés}` +
+      `   ${percent(creditCount('films_distribution'), filmsAppariés)}`,
+  );
+  out.push(
+    `  séries avec création          ${String(creditCount('series_creation')).padStart(5)} / ${seriesAppariées}` +
+      `   ${percent(creditCount('series_creation'), seriesAppariées)}`,
+  );
+  out.push(
+    `  séries avec distribution      ${String(creditCount('series_distribution')).padStart(5)} / ${seriesAppariées}` +
+      `   ${percent(creditCount('series_distribution'), seriesAppariées)}`,
+  );
+  out.push('');
+  out.push(
+    `  films avec classification     ${String(creditCount('films_classification')).padStart(5)} / ${filmsAppariés}` +
+      `   ${percent(creditCount('films_classification'), filmsAppariés)}`,
+  );
+  out.push(
+    `  séries avec classification    ${String(creditCount('series_classification')).padStart(5)} / ${seriesAppariées}` +
+      `   ${percent(creditCount('series_classification'), seriesAppariées)}`,
+  );
+  out.push('');
+  out.push(`  personnes distinctes en base  ${String(creditCount('personnes')).padStart(5)}`);
+  out.push(`  lignes de crédit             ${String(creditCount('lignes')).padStart(6)}`);
+
+  /*
+   * Une série sans créateur déclaré n'est pas une anomalie : TMDB laisse
+   * `created_by` vide pour beaucoup d'animes et de productions anciennes. On le
+   * dit, pour que le taux ne soit pas lu comme un défaut de la passe.
+   */
+  const sansCréation = seriesAppariées - creditCount('series_creation');
+  if (sansCréation > 0) {
+    out.push('');
+    out.push(
+      `  ${sansCréation} série(s) sans créateur déclaré chez TMDB — fréquent sur les animes`,
+    );
+    out.push('  et les productions anciennes. La fiche masque alors la ligne.');
+  }
+
+  /*
+   * Les deux comptages sont faits en sous-requêtes et additionnés.
+   *
+   * Une double jointure produirait un produit cartésien : « Comédie » avec 172
+   * films et 20 séries donnait 3 440 au lieu de 192, et le rapport annonçait
+   * huit fois plus de genres que la bibliothèque n'a d'œuvres.
+   */
   const genres = db
     .prepare(
-      `SELECT g.name, COUNT(*) AS n FROM genre g
-       LEFT JOIN movie_genre mg ON mg.genre_id = g.id
-       LEFT JOIN show_genre sg ON sg.genre_id = g.id
-       WHERE mg.movie_id IS NOT NULL OR sg.show_id IS NOT NULL
-       GROUP BY g.id ORDER BY n DESC LIMIT 15`,
+      `SELECT g.name,
+              (SELECT COUNT(*) FROM movie_genre mg WHERE mg.genre_id = g.id)
+            + (SELECT COUNT(*) FROM show_genre sg WHERE sg.genre_id = g.id) AS n
+       FROM genre g
+       WHERE n > 0
+       ORDER BY n DESC, g.name LIMIT 15`,
     )
     .all() as { name: string; n: number }[];
   if (genres.length > 0) {

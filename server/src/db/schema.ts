@@ -25,11 +25,13 @@
  *     descriptives sur les œuvres.
  * 4 — appariements validés à la main, que les passes automatiques ne doivent
  *     jamais défaire.
+ * 5 — logos de titres (title treatments), incrustés sur les vignettes.
+ * 6 — personnes et crédits : réalisation, création, distribution.
  *
  * Les évolutions sont additives et toutes les instructions sont en
  * `IF NOT EXISTS` : rouvrir une base v1 la complète sans rien perdre.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 6;
 
 export const SCHEMA_SQL = `
 -- ---------------------------------------------------------------------------
@@ -359,6 +361,46 @@ CREATE TABLE IF NOT EXISTS tmdb_match (
 );
 
 CREATE INDEX IF NOT EXISTS tmdb_match_by_status ON tmdb_match (status);
+
+-- ---------------------------------------------------------------------------
+-- Phase 6 — personnes et crédits
+-- ---------------------------------------------------------------------------
+
+-- La clé primaire est l'identifiant TMDB : la même personne rencontrée sur
+-- vingt films n'occupe qu'une ligne, et son nom se corrige d'une passe à
+-- l'autre. « profile_path » est le chemin TMDB brut, conservé pour plus tard —
+-- les photos ne sont pas téléchargées pour l'instant.
+CREATE TABLE IF NOT EXISTS person (
+  tmdb_id       INTEGER PRIMARY KEY,
+  name          TEXT NOT NULL,
+  profile_path  TEXT
+);
+
+-- Un crédit relie une personne à une œuvre.
+--
+-- « work_id » désigne movie.id ou show.id selon « work_type ». Comme pour
+-- playback_progress, aucune clé étrangère n'est possible sur deux tables : la
+-- cohérence est tenue par le code, qui réécrit tous les crédits d'une œuvre en
+-- bloc à chaque enrichissement.
+--
+-- « role » dit ce que la fiche affiche — « Réalisation », « Création »,
+-- « Distribution » — quand « department » garde la valeur TMDB d'origine.
+-- La colonne de rang s'appelle « credit_order » et non « order » : ce dernier
+-- est un mot réservé SQL qu'il faudrait échapper dans chaque requête.
+CREATE TABLE IF NOT EXISTS credit (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_id       INTEGER NOT NULL,
+  work_type     TEXT NOT NULL CHECK (work_type IN ('movie', 'show')),
+  person_id     INTEGER NOT NULL REFERENCES person(tmdb_id) ON DELETE CASCADE,
+  role          TEXT NOT NULL CHECK (role IN ('cast', 'director', 'creator')),
+  character     TEXT,
+  department    TEXT,
+  credit_order  INTEGER,
+  UNIQUE (work_type, work_id, person_id, role)
+);
+
+CREATE INDEX IF NOT EXISTS credit_by_work ON credit (work_type, work_id);
+CREATE INDEX IF NOT EXISTS credit_by_person ON credit (person_id);
 `;
 
 /**
@@ -417,5 +459,29 @@ export const COLUMN_ADDITIONS: { table: string; column: string; definition: stri
    */
   { table: 'tmdb_match', column: 'manually_matched', definition: 'INTEGER NOT NULL DEFAULT 0' },
   { table: 'tmdb_match', column: 'decided_at', definition: 'TEXT' },
+
+  /*
+   * --- Phase 5 : logos de titres ------------------------------------------
+   *
+   * Le « title treatment » est le logo graphique du film ou de la série, sur
+   * fond transparent. C'est lui que Disney+ et Netflix incrustent sur les
+   * vignettes à la place du titre en texte, et c'est ce qui donne son identité
+   * visuelle à l'interface.
+   *
+   * NULL quand TMDB n'en propose aucun : l'interface doit alors afficher le
+   * titre en texte, ce repli est prévu partout.
+   */
+  { table: 'movie', column: 'logo_path', definition: 'TEXT' },
+  { table: 'show', column: 'logo_path', definition: 'TEXT' },
+
+  /*
+   * --- Phase 6 : classification par âge ------------------------------------
+   *
+   * « Tous publics », « 12 », « TV-MA »… L'onglet Détails l'affiche à côté de
+   * la durée et du genre. TMDB la range hors du détail de l'œuvre, dans
+   * `release_dates` pour les films et `content_ratings` pour les séries.
+   */
+  { table: 'movie', column: 'certification', definition: 'TEXT' },
+  { table: 'show', column: 'certification', definition: 'TEXT' },
 ];
 

@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;700&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  html, body { margin:0; padding:0; background:#07080C; }
+  a { color:#A0A5B0; text-decoration:none; }
+  a:hover { color:#F9F9F9; }
+  select { font-family:Figtree, Helvetica, sans-serif; }
+</style>
+</helmet>
+
+<div style="background:#07080C;font-family:Figtree,Helvetica,sans-serif;color:#F9F9F9;padding:44px 44px 96px;display:flex;flex-direction:column;align-items:center;gap:56px;text-wrap:pretty">
+
+  <!-- 01 ACCUEIL -->
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;color:#A0A5B0;text-transform:uppercase">01 — Accueil</div>
+    <div data-screen-label="01 Accueil" style="position:relative;width:1440px;height:1420px;background:#0F1117;border-radius:8px;overflow:hidden">
+      <dc-import name="TopNav" active="Accueil" hint-size="100%,68px"></dc-import>
+
+      <!-- hero carousel -->
+      <div style="position:absolute;top:84px;left:0;right:0;overflow:hidden">
+        <div style="display:flex;gap:16px;transform:translateX(-1156px)">
+          <div style="flex:0 0 1240px;height:470px;border-radius:8px;background:radial-gradient(120% 140% at 30% 25%,#2C3348 0%,#161A24 60%,#0F1117 100%)"></div>
+
+          <div style="flex:0 0 1240px;height:470px;border-radius:8px;overflow:hidden;position:relative;background:repeating-linear-gradient(115deg,rgba(255,255,255,0.03) 0 2px,rgba(0,0,0,0) 2px 10px),radial-gradient(110% 130% at 68% 30%,#3A4358 0%,#1B2130 55%,#0F1117 100%)">
+            <div style="position:absolute;left:14px;bottom:10px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.14em;color:rgba(249,249,249,0.22)">IMAGE DE FOND 16:9</div>
+            <div style="position:absolute;inset:0;background:linear-gradient(to right,rgba(15,17,23,0.94) 0%,rgba(15,17,23,0.72) 34%,rgba(15,17,23,0.1) 62%,rgba(15,17,23,0) 100%)"></div>
+            <div style="position:absolute;inset:0;background:linear-gradient(to top,rgba(15,17,23,0.7) 0%,rgba(15,17,23,0) 55%)"></div>
+            <div style="position:absolute;left:64px;bottom:56px;width:560px">
+              <div style="display:inline-flex;align-items:center;height:24px;padding:0 11px;border-radius:4px;background:linear-gradient(135deg,#0063E5,#0E47D1);font-size:10px;font-weight:700;letter-spacing:0.16em;text-transform:uppercase;margin-bottom:22px">Nouveau</div>
+              <div style="font-size:12px;font-weight:600;letter-spacing:0.42em;color:rgba(249,249,249,0.66);margin-bottom:6px">UNE HISTOIRE DE</div>
+              <div style="font-size:62px;font-weight:700;letter-spacing:0.06em;line-height:0.95;text-transform:uppercase;text-shadow:0 4px 30px rgba(0,0,0,0.6)">Marseille<br>Nord</div>
+              <div style="height:2px;width:96px;background:#F9F9F9;opacity:0.85;margin:18px 0 16px"></div>
+              <div style="font-size:14px;color:#F9F9F9;opacity:0.92;display:flex;gap:10px;align-items:center">
+                <span>2024</span><span style="opacity:0.4">·</span><span>Policier, Drame</span><span style="opacity:0.4">·</span><span>2 h 07</span><span style="opacity:0.4">·</span><span style="border:1px solid rgba(249,249,249,0.5);border-radius:3px;padding:1px 5px;font-size:11px;font-weight:600">-12</span>
+              </div>
+              <div style="font-size:14px;line-height:1.55;color:#A0A5B0;margin-top:14px">Une commandante de la BRB retourne dans le quartier où elle a grandi pour démanteler un réseau qu'elle connaît trop bien.</div>
+              <div style="display:flex;gap:14px;margin-top:26px">
+                <div style="display:flex;align-items:center;gap:10px;height:46px;padding:0 34px;border-radius:4px;background:linear-gradient(135deg,#0063E5,#0E47D1);font-size:15px;font-weight:600;box-shadow:0 8px 24px rgba(0,99,229,0.35)">
+                  <svg width="13" height="15" viewBox="0 0 13 15" fill="#F9F9F9"><path d="M0 0l13 7.5L0 15z"></path></svg>
+                  <span>Lire</span>
+                </div>
+                <div style="display:flex;align-items:center;height:46px;padding:0 26px;border-radius:4px;border:1px solid rgba(249,249,249,0.55);font-size:12px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#F9F9F9">Plus d'infos</div>
+              </div>
+            </div>
+          </div>
+
+          <div style="flex:0 0 1240px;height:470px;border-radius:8px;background:radial-gradient(120% 140% at 70% 25%,#2A3A3F 0%,#161C22 60%,#0F1117 100%)"></div>
+        </div>
+        <div style="display:flex;justify-content:center;gap:8px;margin-top:20px">
+          <div style="width:7px;height:7px;border-radius:50%;background:rgba(249,249,249,0.3)"></div>
+          <div style="width:22px;height:7px;border-radius:4px;background:#F9F9F9"></div>
+          <div style="width:7px;height:7px;border-radius:50%;background:rgba(249,249,249,0.3)"></div>
+          <div style="width:7px;height:7px;border-radius:50%;background:rgba(249,249,249,0.3)"></div>
+          <div style="width:7px;height:7px;border-radius:50%;background:rgba(249,249,249,0.3)"></div>
+        </div>
+      </div>
+
+      <!-- rows -->
+      <div style="position:absolute;top:640px;left:0;right:0;display:flex;flex-direction:column;gap:26px">
+        <sc-for list="{{ rows }}" as="row" hint-placeholder-count="3">
+          <div>
+            <div style="font-size:19px;font-weight:600;padding:0 48px;margin-bottom:14px">{{ row.title }}</div>
+            <div style="display:flex;gap:14px;padding:0 48px">
+              <sc-for list="{{ row.tiles }}" as="t" hint-placeholder-count="6">
+                <div style="flex:0 0 288px;width:288px">
+                  <div onMouseEnter="{{ t.enter }}" onMouseLeave="{{ t.leave }}" style="position:relative;height:162px">
+                    <sc-if value="{{ t.hot }}" hint-placeholder-val="{{ false }}">
+                      <div style="position:absolute;inset:0;border-radius:4px;overflow:hidden;box-sizing:border-box;border:3px solid #F9F9F9;box-shadow:0 16px 38px rgba(0,0,0,0.7);transform:scale(1.08);transition:transform 180ms ease;z-index:4;background:{{ t.bg }}">
+                        <div style="position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.78) 0%,rgba(0,0,0,0.16) 46%,rgba(0,0,0,0) 72%)"></div>
+                        <div style="position:absolute;left:14px;right:14px;bottom:12px">
+                          <div style="font-size:8px;font-weight:600;letter-spacing:0.34em;color:rgba(249,249,249,0.7);margin-bottom:3px">{{ t.kicker }}</div>
+                          <div style="font-size:15px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;line-height:1.05;text-shadow:0 2px 12px rgba(0,0,0,0.75)">{{ t.t }}</div>
+                        </div>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ t.cold }}" hint-placeholder-val="{{ true }}">
+                      <div style="position:absolute;inset:0;border-radius:4px;overflow:hidden;box-sizing:border-box;border:3px solid transparent;background:{{ t.bg }}">
+                        <div style="position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.78) 0%,rgba(0,0,0,0.16) 46%,rgba(0,0,0,0) 72%)"></div>
+                        <div style="position:absolute;left:14px;right:14px;bottom:12px">
+                          <div style="font-size:8px;font-weight:600;letter-spacing:0.34em;color:rgba(249,249,249,0.7);margin-bottom:3px">{{ t.kicker }}</div>
+                          <div style="font-size:15px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;line-height:1.05;text-shadow:0 2px 12px rgba(0,0,0,0.75)">{{ t.t }}</div>
+                        </div>
+                      </div>
+                    </sc-if>
+                  </div>
+                  <div style="height:40px;padding-top:16px">
+                    <sc-if value="{{ t.hot }}" hint-placeholder-val="{{ false }}">
+                      <div style="font-size:12px;color:#A0A5B0;display:flex;gap:7px;justify-content:center">
+                        <span>{{ t.year }}</span><span style="opacity:0.45">·</span><span>{{ t.genres }}</span><span style="opacity:0.45">·</span><span>{{ t.dur }}</span>
+                      </div>
+                    </sc-if>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+
+  <!-- 02 REPRENDRE LA LECTURE -->
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;color:#A0A5B0;text-transform:uppercase">02 — Rangée « Reprendre la lecture »</div>
+    <div data-screen-label="02 Reprendre la lecture" style="position:relative;width:1440px;height:520px;background:#0F1117;border-radius:8px;overflow:hidden">
+      <dc-import name="TopNav" active="Accueil" hint-size="100%,68px"></dc-import>
+      <div style="position:absolute;top:132px;left:0;right:0">
+        <div style="font-size:19px;font-weight:600;padding:0 48px;margin-bottom:16px">Reprendre la lecture</div>
+        <div style="display:flex;gap:14px;padding:0 48px">
+          <sc-for list="{{ resume }}" as="c" hint-placeholder-count="4">
+            <div style="flex:0 0 306px;width:306px">
+              <div style="position:relative;height:172px;border-radius:4px;overflow:hidden;background:{{ c.bg }}">
+                <div style="position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.82) 0%,rgba(0,0,0,0.2) 48%,rgba(0,0,0,0) 74%)"></div>
+                <div style="position:absolute;left:14px;right:14px;bottom:26px">
+                  <div style="font-size:8px;font-weight:600;letter-spacing:0.34em;color:rgba(249,249,249,0.7);margin-bottom:3px">{{ c.kicker }}</div>
+                  <div style="font-size:15px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;line-height:1.05;text-shadow:0 2px 12px rgba(0,0,0,0.75)">{{ c.t }}</div>
+                </div>
+                <div style="position:absolute;left:0;right:0;bottom:0;height:4px;background:rgba(249,249,249,0.22)">
+                  <div style="height:4px;background:#00A8E1;width:{{ c.pct }}%"></div>
+                </div>
+              </div>
+              <div style="padding-top:12px;display:flex;flex-direction:column;gap:4px">
+                <div style="font-size:14px;font-weight:600">{{ c.title }}</div>
+                <sc-if value="{{ c.ep }}" hint-placeholder-val="{{ false }}">
+                  <div style="font-size:13px;color:#A0A5B0">{{ c.ep }}</div>
+                </sc-if>
+                <div style="font-size:12px;color:#A0A5B0;opacity:0.9">{{ c.left }}</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 03 FICHE FILM -->
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;color:#A0A5B0;text-transform:uppercase">03 — Fiche d'un film</div>
+    <div data-screen-label="03 Fiche film" style="position:relative;width:1440px;height:1080px;background:#0F1117;border-radius:8px;overflow:hidden">
+      <div style="position:absolute;top:0;left:0;right:0;height:760px;background:repeating-linear-gradient(115deg,rgba(255,255,255,0.028) 0 2px,rgba(0,0,0,0) 2px 10px),radial-gradient(100% 120% at 72% 26%,#3B4356 0%,#1C2130 52%,#12141C 100%)">
+        <div style="position:absolute;right:16px;top:80px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.14em;color:rgba(249,249,249,0.22)">IMAGE DE FOND PLEIN ÉCRAN</div>
+        <div style="position:absolute;inset:0;background:linear-gradient(to right,#0F1117 0%,rgba(15,17,23,0.86) 30%,rgba(15,17,23,0.12) 66%,rgba(15,17,23,0) 100%)"></div>
+        <div style="position:absolute;inset:0;background:linear-gradient(to top,#0F1117 0%,rgba(15,17,23,0.55) 22%,rgba(15,17,23,0) 58%)"></div>
+      </div>
+      <dc-import name="TopNav" active="Films" hint-size="100%,68px"></dc-import>
+
+      <div style="position:absolute;left:64px;top:290px;width:600px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.42em;color:rgba(249,249,249,0.6);margin-bottom:8px">UN FILM DE CLAIRE BONNEFOY</div>
+        <div style="font-size:74px;font-weight:700;letter-spacing:0.04em;line-height:0.94;text-transform:uppercase;text-shadow:0 6px 34px rgba(0,0,0,0.6)">Le dernier<br>quai</div>
+        <div style="display:flex;gap:10px;align-items:center;font-size:14px;margin-top:22px">
+          <span>2023</span><span style="opacity:0.4">·</span><span>Drame, Policier</span><span style="opacity:0.4">·</span><span>1 h 58</span><span style="opacity:0.4">·</span><span style="border:1px solid rgba(249,249,249,0.5);border-radius:3px;padding:1px 5px;font-size:11px;font-weight:600">-12</span><span style="opacity:0.4">·</span><span>1080p</span>
+        </div>
+        <div style="font-size:15px;line-height:1.6;color:#A0A5B0;margin-top:16px;max-width:560px">Sur les docks du Havre, un veilleur de nuit découvre le corps d'un jeune homme dans un conteneur. Convaincu que l'affaire sera classée, il mène l'enquête seul et remonte jusqu'aux réseaux qui font vivre le port. Trente ans de silence remontent avec lui. <a href="#" style="color:#F9F9F9;font-weight:600">plus</a></div>
+        <div style="display:flex;gap:16px;align-items:center;margin-top:30px">
+          <div style="display:flex;align-items:center;gap:10px;height:48px;padding:0 40px;border-radius:4px;background:linear-gradient(135deg,#0063E5,#0E47D1);font-size:15px;font-weight:600;box-shadow:0 8px 26px rgba(0,99,229,0.38)">
+            <svg width="13" height="15" viewBox="0 0 13 15" fill="#F9F9F9"><path d="M0 0l13 7.5L0 15z"></path></svg>
+            <span>Lire</span>
+          </div>
+          <div style="display:flex;gap:12px">
+            <div style="width:48px;height:48px;border-radius:50%;background:#252A38;border:1px solid rgba(249,249,249,0.14);display:flex;align-items:center;justify-content:center">
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#F9F9F9" stroke-width="1.6" stroke-linecap="round"><path d="M10 4.5v11M4.5 10h11"></path></svg>
+            </div>
+            <div style="width:48px;height:48px;border-radius:50%;background:#252A38;border:1px solid rgba(249,249,249,0.14);display:flex;align-items:center;justify-content:center">
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#F9F9F9" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8.5V17H3.5V8.5zM6 8.5l3.4-5.2c1.6 0 2.2 1 1.9 2.3L10.8 8h4.4c1 0 1.7.9 1.5 1.9l-1.2 5.6c-.2.9-1 1.5-1.9 1.5H6"></path></svg>
+            </div>
+            <div style="width:48px;height:48px;border-radius:50%;background:#252A38;border:1px solid rgba(249,249,249,0.14);display:flex;align-items:center;justify-content:center">
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#F9F9F9" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16V4h12v12l-6-3.6z"></path></svg>
+            </div>
+            <div style="width:48px;height:48px;border-radius:50%;background:#252A38;border:1px solid rgba(249,249,249,0.14);display:flex;align-items:center;justify-content:center">
+              <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#F9F9F9" stroke-width="1.6" stroke-linecap="round"><circle cx="5" cy="10" r="1.4"></circle><circle cx="10" cy="10" r="1.4"></circle><circle cx="15" cy="10" r="1.4"></circle></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="position:absolute;top:700px;left:0;right:0">
+        <div style="display:flex;gap:36px;padding:0 64px;border-bottom:1px solid rgba(249,249,249,0.09)">
+          <div style="padding-bottom:14px;font-size:13px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#F9F9F9;border-bottom:2px solid #F9F9F9;margin-bottom:-1px">Suggestions</div>
+          <div style="padding-bottom:14px;font-size:13px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#A0A5B0">Détails</div>
+        </div>
+        <div style="display:flex;gap:14px;padding:28px 64px 0">
+          <sc-for list="{{ suggestions }}" as="s" hint-placeholder-count="4">
+            <div style="flex:0 0 288px;width:288px">
+              <div style="position:relative;height:162px;border-radius:4px;overflow:hidden;background:{{ s.bg }}">
+                <div style="position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.78) 0%,rgba(0,0,0,0.16) 46%,rgba(0,0,0,0) 72%)"></div>
+                <div style="position:absolute;left:14px;right:14px;bottom:12px">
+                  <div style="font-size:8px;font-weight:600;letter-spacing:0.34em;color:rgba(249,249,249,0.7);margin-bottom:3px">{{ s.kicker }}</div>
+                  <div style="font-size:15px;font-weight:700;letter-spacing:0.15em;text-transform:uppercase;line-height:1.05;text-shadow:0 2px 12px rgba(0,0,0,0.75)">{{ s.t }}</div>
+                </div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 04 FICHE SÉRIE -->
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;color:#A0A5B0;text-transform:uppercase">04 — Fiche d'une série</div>
+    <div data-screen-label="04 Fiche série" style="position:relative;width:1440px;height:1240px;background:#0F1117;border-radius:8px;overflow:hidden">
+      <div style="position:absolute;top:0;left:0;right:0;height:700px;background:repeating-linear-gradient(115deg,rgba(255,255,255,0.028) 0 2px,rgba(0,0,0,0) 2px 10px),radial-gradient(100% 120% at 70% 24%,#2F4453 0%,#18232E 52%,#12141C 100%)">
+        <div style="position:absolute;inset:0;background:linear-gradient(to right,#0F1117 0%,rgba(15,17,23,0.86) 30%,rgba(15,17,23,0.12) 66%,rgba(15,17,23,0) 100%)"></div>
+        <div style="position:absolute;inset:0;background:linear-gradient(to top,#0F1117 0%,rgba(15,17,23,0.55) 22%,rgba(15,17,23,0) 58%)"></div>
+      </div>
+      <dc-import name="TopNav" active="Séries" hint-size="100%,68px"></dc-import>
+
+      <div style="position:absolute;left:64px;top:250px;width:620px">
+        <div style="font-size:12px;font-weight:600;letter-spacing:0.42em;color:rgba(249,249,249,0.6);margin-bottom:8px">SÉRIE POLICIÈRE</div>
+        <div style="font-size:70px;font-weight:700;letter-spacing:0.05em;line-height:0.94;text-transform:uppercase;text-shadow:0 6px 34px rgba(0,0,0,0.6)">Brigade<br>nord</div>
+        <div style="display:flex;gap:10px;align-items:center;font-size:14px;margin-top:22px">
+          <span>2013 – 2026</span><span style="opacity:0.4">·</span><span>11 saisons</span><span style="opacity:0.4">·</span><span>Policier, Drame</span><span style="opacity:0.4">·</span><span style="border:1px solid rgba(249,249,249,0.5);border-radius:3px;padding:1px 5px;font-size:11px;font-weight:600">-10</span>
+        </div>
+        <div style="font-size:15px;line-height:1.6;color:#A0A5B0;margin-top:16px;max-width:560px">À Lille, une brigade criminelle réduite à six agents enchaîne les affaires que personne ne veut reprendre. Onze saisons plus tard, l'équipe tient toujours, malgré les mutations et les nuits blanches. <a href="#" style="color:#F9F9F9;font-weight:600">plus</a></div>
+        <div style="display:flex;gap:16px;align-items:center;margin-top:28px">
+          <div style="display:flex;align-items:center;gap:10px;height:48px;padding:0 34px;border-radius:4px;background:linear-gradient(135deg,#0063E5,#0E47D1);font-size:15px;font-weight:600;box-shadow:0 8px 26px rgba(0,99,229,0.38)">
+            <svg width="13" height="15" viewBox="0 0 13 15" fill="#F9F9F9"><path d="M0 0l13 7.5L0 15z"></path></svg>
+            <span>Reprendre S11:E8</span>
+          </div>
+          <div style="width:48px;height:48px;border-radius:50%;background:#252A38;border:1px solid rgba(249,249,249,0.14);display:flex;align-items:center;justify-content:center">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#F9F9F9" stroke-width="1.6" stroke-linecap="round"><path d="M10 4.5v11M4.5 10h11"></path></svg>
+          </div>
+          <div style="width:48px;height:48px;border-radius:50%;background:#252A38;border:1px solid rgba(249,249,249,0.14);display:flex;align-items:center;justify-content:center">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#F9F9F9" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16V4h12v12l-6-3.6z"></path></svg>
+          </div>
+        </div>
+      </div>
+
+      <div style="position:absolute;top:660px;left:0;right:0;padding:0 64px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
+          <div style="font-size:19px;font-weight:600">Épisodes</div>
+          <div style="display:flex;align-items:center;gap:14px">
+            <div style="font-size:13px;color:#A0A5B0">10 épisodes</div>
+            <div style="position:relative">
+              <select style="appearance:none;-webkit-appearance:none;background:#252A38;color:#F9F9F9;border:1px solid rgba(249,249,249,0.16);border-radius:4px;height:40px;padding:0 44px 0 16px;font-size:14px;font-weight:600">
+                <option>Saison 11</option>
+                <option>Saison 10</option>
+                <option>Saison 9</option>
+                <option>Saison 8</option>
+                <option>Saison 7</option>
+                <option>Saison 6</option>
+                <option>Saison 5</option>
+                <option>Saison 4</option>
+                <option>Saison 3</option>
+                <option>Saison 2</option>
+                <option>Saison 1</option>
+              </select>
+              <svg width="12" height="8" viewBox="0 0 12 8" fill="none" stroke="#F9F9F9" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="position:absolute;right:16px;top:16px;pointer-events:none"><path d="M1 1.5 6 6.5 11 1.5"></path></svg>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column">
+          <sc-for list="{{ episodes }}" as="e" hint-placeholder-count="4">
+            <div style="display:flex;gap:24px;padding:20px 0;border-top:1px solid rgba(249,249,249,0.08);align-items:flex-start">
+              <div style="flex:0 0 232px;position:relative;height:130px;border-radius:4px;overflow:hidden;background:{{ e.bg }}">
+                <div style="position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.6) 0%,rgba(0,0,0,0) 60%)"></div>
+                <sc-if value="{{ e.pct }}" hint-placeholder-val="{{ false }}">
+                  <div style="position:absolute;left:0;right:0;bottom:0;height:4px;background:rgba(249,249,249,0.22)">
+                    <div style="height:4px;background:#00A8E1;width:{{ e.pct }}%"></div>
+                  </div>
+                </sc-if>
+              </div>
+              <div style="flex:0 0 300px;padding-top:4px">
+                <div style="font-size:16px;font-weight:600">{{ e.num }}. {{ e.title }}</div>
+                <div style="font-size:13px;color:#A0A5B0;margin-top:8px">{{ e.dur }}</div>
+                <sc-if value="{{ e.left }}" hint-placeholder-val="{{ false }}">
+                  <div style="font-size:13px;color:#00A8E1;margin-top:6px;font-weight:600">{{ e.left }}</div>
+                </sc-if>
+              </div>
+              <div style="flex:1;font-size:14px;line-height:1.6;color:#A0A5B0;padding-top:4px;max-width:600px">{{ e.syn }}</div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 05 DÉTAILS -->
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:0.18em;color:#A0A5B0;text-transform:uppercase">05 — Onglet « Détails » d'un film</div>
+    <div data-screen-label="05 Détails" style="position:relative;width:1440px;height:820px;background:#0F1117;border-radius:8px;overflow:hidden">
+      <dc-import name="TopNav" active="Films" hint-size="100%,68px"></dc-import>
+      <div style="position:absolute;top:110px;left:0;right:0;padding:0 64px">
+        <div style="display:flex;align-items:center;gap:18px;margin-bottom:30px">
+          <div style="font-size:26px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase">Le dernier quai</div>
+          <div style="font-size:14px;color:#A0A5B0">2023 · 1 h 58</div>
+        </div>
+        <div style="display:flex;gap:36px;border-bottom:1px solid rgba(249,249,249,0.09)">
+          <div style="padding-bottom:14px;font-size:13px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#A0A5B0">Suggestions</div>
+          <div style="padding-bottom:14px;font-size:13px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#F9F9F9;border-bottom:2px solid #F9F9F9;margin-bottom:-1px">Détails</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 96px;margin-top:36px">
+          <sc-for list="{{ specs }}" as="s" hint-placeholder-count="10">
+            <div style="display:flex;justify-content:space-between;gap:24px;padding:16px 0;border-bottom:1px solid rgba(249,249,249,0.07)">
+              <div style="font-size:13px;color:#A0A5B0">{{ s.k }}</div>
+              <div style="font-size:14px;font-weight:600;text-align:right">{{ s.v }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="margin-top:34px;padding:20px 24px;background:#1A1D29;border-radius:4px;display:flex;justify-content:space-between;align-items:center">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#A0A5B0">/media/films/Le Dernier Quai (2023)/Le.Dernier.Quai.2023.1080p.mkv</div>
+          <div style="font-size:11px;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:#A0A5B0;border:1px solid rgba(249,249,249,0.2);border-radius:4px;padding:8px 16px">Réanalyser</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;tileHoverDemo&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Vignettes&quot;}}">
+const BG = h => `repeating-linear-gradient(115deg,rgba(255,255,255,0.03) 0 2px,rgba(0,0,0,0) 2px 9px),radial-gradient(120% 140% at 28% 22%,oklch(0.44 0.075 ${h}) 0%,oklch(0.24 0.045 ${h}) 55%,#0F1117 100%)`;
+
+const LIB = [
+  { t: "Marseille Nord", kicker: "UNE HISTOIRE DE", year: 2024, genres: "Policier, Drame", dur: "2 h 07", h: 262 },
+  { t: "Le dernier quai", kicker: "UN FILM DE C. BONNEFOY", year: 2023, genres: "Drame, Policier", dur: "1 h 58", h: 232 },
+  { t: "Colline 47", kicker: "1917", year: 2021, genres: "Guerre, Drame", dur: "2 h 11", h: 78 },
+  { t: "Un été à Sète", kicker: "COMÉDIE", year: 2022, genres: "Comédie", dur: "1 h 37", h: 58 },
+  { t: "Chambre 214", kicker: "THRILLER", year: 2019, genres: "Thriller", dur: "1 h 44", h: 310 },
+  { t: "Tempête sur Brest", kicker: "D'APRÈS LE ROMAN", year: 2020, genres: "Drame, Aventure", dur: "2 h 04", h: 218 },
+  { t: "Nos années sauvages", kicker: "CHRONIQUE", year: 2018, genres: "Drame, Romance", dur: "1 h 52", h: 20 },
+  { t: "La ligne de crête", kicker: "HAUTE MONTAGNE", year: 2024, genres: "Aventure, Drame", dur: "1 h 49", h: 200 },
+  { t: "Panique à Roubaix", kicker: "COMÉDIE POLICIÈRE", year: 2023, genres: "Comédie, Policier", dur: "1 h 41", h: 96 },
+  { t: "Deux frères, un camion", kicker: "SUR LA ROUTE", year: 2021, genres: "Comédie", dur: "1 h 35", h: 42 },
+  { t: "Le goût du vertige", kicker: "COMÉDIE ROMANTIQUE", year: 2022, genres: "Comédie, Romance", dur: "1 h 46", h: 340 },
+  { t: "Cœur de béton", kicker: "BANLIEUE", year: 2020, genres: "Drame", dur: "1 h 58", h: 280 },
+  { t: "L'homme du périph", kicker: "POLAR", year: 2025, genres: "Policier", dur: "2 h 02", h: 250 },
+  { t: "Le voleur d'orages", kicker: "CONTE", year: 2019, genres: "Fantastique", dur: "1 h 44", h: 300 },
+  { t: "Les faux-semblants", kicker: "HUIS CLOS", year: 2018, genres: "Thriller, Drame", dur: "1 h 39", h: 150 },
+  { t: "Cinq jours en juin", kicker: "COMÉDIE FAMILIALE", year: 2024, genres: "Comédie", dur: "1 h 33", h: 120 },
+  { t: "La fanfare de Guéret", kicker: "COMÉDIE", year: 2023, genres: "Comédie, Musique", dur: "1 h 44", h: 70 },
+  { t: "Vertiges", kicker: "SÉRIE — SAISON 2", year: 2025, genres: "Thriller", dur: "8 × 48 min", h: 290 },
+];
+
+const pick = (...names) => names.map(n => LIB.find(f => f.t === n));
+
+class Component extends DCLogic {
+  state = { hover: null };
+
+  renderVals() {
+    const demo = "Films|Colline 47";
+    const mk = (rowName, f) => {
+      const key = rowName + "|" + f.t;
+      const hot = this.state.hover ? this.state.hover === key : key === demo;
+      return {
+        ...f,
+        bg: BG(f.h),
+        hot,
+        cold: !hot,
+        enter: () => this.setState({ hover: key }),
+        leave: () => this.setState({ hover: demo }),
+      };
+    };
+
+    const rows = [
+      { title: "Ajouts récents", list: pick("L'homme du périph", "Cinq jours en juin", "Marseille Nord", "La ligne de crête", "La fanfare de Guéret", "Vertiges") },
+      { title: "Films", list: pick("Le dernier quai", "Colline 47", "Chambre 214", "Tempête sur Brest", "Cœur de béton", "Les faux-semblants") },
+      { title: "Comédie", list: pick("Un été à Sète", "Panique à Roubaix", "Deux frères, un camion", "Le goût du vertige", "Cinq jours en juin", "La fanfare de Guéret") },
+    ].map(r => ({ title: r.title, tiles: r.list.map(f => mk(r.title, f)) }));
+
+    const resume = [
+      { ...LIB[1], title: "Le dernier quai", pct: 68, left: "Il reste 36 min" },
+      { t: "Brigade nord", kicker: "SÉRIE POLICIÈRE", h: 232, title: "Brigade nord", ep: "S11:E8 Le goût du risque", pct: 42, left: "Il reste 31 min" },
+      { ...LIB[3], title: "Un été à Sète", pct: 22, left: "Il reste 1 h 14" },
+      { t: "Vertiges", kicker: "SÉRIE — SAISON 2", h: 290, title: "Vertiges", ep: "S2:E3 La nuit blanche", pct: 84, left: "Il reste 8 min" },
+    ].map(c => ({ ...c, bg: BG(c.h) }));
+
+    const suggestions = pick("Chambre 214", "Les faux-semblants", "Cœur de béton", "L'homme du périph")
+      .map(f => ({ ...f, bg: BG(f.h) }));
+
+    const episodes = [
+      { num: 7, title: "Ligne de fuite", dur: "52 min", syn: "Un braquage manqué place de la Gare laisse un otage sur le carreau. Vasseur reconnaît la méthode d'un dossier qu'elle avait classé cinq ans plus tôt." },
+      { num: 8, title: "Le goût du risque", dur: "54 min", left: "Il reste 31 min", pct: 42, syn: "Pour approcher un réseau de paris clandestins, Malik accepte une couverture que la brigade n'a pas validée. Vasseur doit choisir entre le couvrir et le sortir du terrain." },
+      { num: 9, title: "Terrain vague", dur: "51 min", syn: "Deux adolescents disparaissent après une fête dans une friche industrielle. L'enquête met la brigade face aux failles d'un foyer d'accueil du secteur." },
+      { num: 10, title: "Ce qui reste", dur: "56 min", syn: "Le procès du réseau s'ouvre sans témoin principal. Vasseur apprend que sa mutation a été signée trois semaines plus tôt." },
+    ].map((e, i) => ({ ...e, bg: BG(220 + i * 22) }));
+
+    const specs = [
+      { k: "Résolution", v: "1920 × 1080 (1080p)" },
+      { k: "Codec vidéo", v: "H.264 High Profile" },
+      { k: "Débit vidéo", v: "8,4 Mb/s" },
+      { k: "Codec audio", v: "E-AC3 5.1 · 640 kb/s" },
+      { k: "Pistes audio", v: "Français (VF) · Anglais (VO)" },
+      { k: "Sous-titres", v: "Français · Français (SDH)" },
+      { k: "Conteneur", v: "Matroska (MKV)" },
+      { k: "Taille du fichier", v: "7,42 Go" },
+      { k: "Images par seconde", v: "23,976 ips" },
+      { k: "Ajouté le", v: "4 août 2026" },
+    ];
+
+    return { rows, resume, suggestions, episodes, specs };
+  }
+}
+</script>
+</body>
+</html>

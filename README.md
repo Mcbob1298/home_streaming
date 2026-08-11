@@ -379,38 +379,49 @@ code ne les remplit dans cette itération.
 
 Pagination : 50 éléments par page.
 
-| Route                                                  | Réponse                          |
-| ------------------------------------------------------ | -------------------------------- |
-| `GET /api/libraries`                                    | bibliothèques + nombre d'éléments |
-| `GET /api/movies?search=&library=&sort=&order=&page=`   | page de films                    |
-| `GET /api/movies/:id`                                   | film + fichiers + sous-titres    |
-| `GET /api/shows?search=&library=&sort=&order=&page=`    | page de séries                   |
-| `GET /api/shows/:id`                                    | série + saisons + épisodes       |
+| Route                                                        | Réponse                                     |
+| ------------------------------------------------------------ | ------------------------------------------- |
+| `GET /api/libraries`                                          | bibliothèques + nombre d'éléments            |
+| `GET /api/genres`                                             | genres présents + nombre de films et séries |
+| `GET /api/movies?search=&library=&genre=&sort=&order=&page=`  | page de films                               |
+| `GET /api/movies/:id`                                         | film, crédits, synthèse fichiers            |
+| `GET /api/shows?search=&library=&genre=&sort=&order=&page=`   | page de séries                              |
+| `GET /api/shows/:id`                                          | série, saisons, épisodes, crédits, synthèse |
 
 - `sort` : `title` (défaut), `year`, `added`. `order` : `asc` / `desc` — par
   défaut croissant pour le titre, décroissant pour l'année et la date d'ajout.
 - `search` : recherche par mots sur le titre normalisé, donc insensible aux
   accents et à la ponctuation. « amelie » trouve « Amélie ».
 - Seules les œuvres ayant au moins un fichier présent sont listées.
+- Chaque image renvoyée l'est en deux champs : `xxxPath`, l'URL de repli, et
+  `xxxSrcSet`, les tailles disponibles. L'attribut `sizes` appartient au
+  composant, seul à connaître sa largeur d'affichage.
+- `fileSummary` agrège les fichiers de l'œuvre : définitions, codecs, langues
+  audio, taille cumulée, emplacements. **Une série n'a pas de fichier** — ce
+  sont ses épisodes qui en ont — d'où cette synthèse, et non une liste de
+  fichiers portée par l'œuvre.
 
 ---
 
 ## Interface
 
-- **Accueil** : les bibliothèques et leur nombre d'éléments.
-- **Bibliothèque** : grille de cartes, barre de recherche (avec temporisation de
-  300 ms pour ne pas lancer une requête à chaque lettre), tri titre / année /
-  date d'ajout, pagination.
-- **Détail film** : les fichiers rattachés et leurs sous-titres.
-- **Détail série** : les saisons, puis les épisodes.
+- **Accueil** : carrousel de mise en avant, puis des rangées horizontales —
+  ajouts récents, films, séries, genres les plus fournis.
+- **Films / Séries** : titre centré, pastilles de genre, tri, grille et
+  défilement infini par lots de 50.
+- **Recherche** : page dédiée. Tant que rien n'est saisi — et quand un terme ne
+  donne rien — la page affiche les rangées à parcourir : elle n'est jamais vide.
+- **Fiche film / série** : image de fond **fixée** derrière toute la page, qui
+  s'assombrit au défilement sans jamais devenir opaque. Une phrase d'accroche,
+  puis des onglets — Épisodes (séries), Suggestions, Détails.
+- **Détails** : le synopsis complet en prose, deux colonnes éditoriales (durée,
+  date, genre, classification / réalisation, distribution), et seulement
+  ensuite une section « Fichier » avec les codecs et les emplacements.
 
-Recherche, tri et page vivent **dans l'URL**, pas dans un état React : un lien
-se partage, et le bouton « précédent » du navigateur refait la vue attendue.
-
-Il n'y a pas encore d'affiches. Le composant `Poster` fabrique un dégradé
-déterministe à partir du titre — même titre, même dégradé. Le champ
-`posterPath` existe déjà dans le modèle et dans l'API ; le jour où les images
-arriveront, seul ce composant changera.
+Genre, tri, page et terme de recherche vivent **dans l'URL**, pas dans un état
+React : un lien se partage, et le bouton « précédent » refait la vue attendue.
+La recherche **remplace** son entrée d'historique plutôt que de l'empiler, sinon
+« précédent » rejouerait la requête lettre par lettre.
 
 ---
 
@@ -476,6 +487,18 @@ npm run metadata
 
 `npm run cleanup -- --dry-run` montre sans rien toucher ; `--yes` évite la
 question.
+
+### Un dégradé « absent » du CSS compilé y est peut-être bien présent
+
+En inspectant le CSS de production, un `linear-gradient(to top, …)` écrit dans le
+code peut ne pas s'y retrouver littéralement. Le minifieur le réécrit sous une
+forme algébriquement équivalente : `to top` avec l'opacité forte à 0 % devient
+`to bottom` avec la même opacité à 100 %, et les positions intermédiaires sont
+inversées (46 % devient 54 %).
+
+Chercher la chaîne d'origine ne donne rien et laisse croire à une classe
+Tailwind non générée. Cherchez plutôt une valeur caractéristique — ici
+`#000000c7`, soit `rgba(0,0,0,0.78)` — plutôt que le dégradé entier.
 
 ### Les scripts de la racine se terminent par `--`
 
