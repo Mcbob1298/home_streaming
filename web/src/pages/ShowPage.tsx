@@ -29,6 +29,14 @@ export function ShowPage() {
             {data.seasons.length > 1 ? 'saisons' : 'saison'}
           </p>
           {data.overview !== null && <p className="mt-4 max-w-2xl text-sm text-zinc-400">{data.overview}</p>}
+
+          {/* Même besoin que pour les films : rattraper une association fausse. */}
+          <Link
+            to={`/review?work=show-${data.id}`}
+            className="mt-4 inline-block rounded-md border border-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-200"
+          >
+            Corriger l’association
+          </Link>
         </div>
       </header>
 

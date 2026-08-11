@@ -23,11 +23,13 @@
  *     embarqués, chemin brut des fichiers.
  * 3 — métadonnées TMDB : genres, appariements et leurs candidats, colonnes
  *     descriptives sur les œuvres.
+ * 4 — appariements validés à la main, que les passes automatiques ne doivent
+ *     jamais défaire.
  *
  * Les évolutions sont additives et toutes les instructions sont en
  * `IF NOT EXISTS` : rouvrir une base v1 la complète sans rien perdre.
  */
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA_SQL = `
 -- ---------------------------------------------------------------------------
@@ -400,5 +402,20 @@ export const COLUMN_ADDITIONS: { table: string; column: string; definition: stri
   { table: 'episode', column: 'air_date', definition: 'TEXT' },
   { table: 'episode', column: 'vote_average', definition: 'REAL' },
   { table: 'episode', column: 'runtime', definition: 'INTEGER' },
+
+  /*
+   * --- Phase 4 : décisions humaines ---------------------------------------
+   *
+   * Un appariement validé à la main fait autorité. Les passes automatiques ne
+   * le remettent jamais en cause, même en trouvant mieux noté : l'utilisateur
+   * a vu le fichier, le catalogue non.
+   *
+   * Ces colonnes vivent sur `tmdb_match`, indexé par (target_type, target_id).
+   * Comme une œuvre n'est jamais supprimée par un scan — seuls ses fichiers
+   * passent à `present = 0` — la décision survit à la disparition puis au
+   * retour d'un fichier.
+   */
+  { table: 'tmdb_match', column: 'manually_matched', definition: 'INTEGER NOT NULL DEFAULT 0' },
+  { table: 'tmdb_match', column: 'decided_at', definition: 'TEXT' },
 ];
 

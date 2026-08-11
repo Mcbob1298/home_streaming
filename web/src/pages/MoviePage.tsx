@@ -38,6 +38,19 @@ export function MoviePage() {
           <h1 className="mt-2 text-2xl font-semibold text-zinc-100">{data.title}</h1>
           <p className="mt-1 text-sm text-zinc-500">{data.year ?? 'année inconnue'}</p>
           {data.overview !== null && <p className="mt-4 max-w-2xl text-sm text-zinc-400">{data.overview}</p>}
+
+          {/*
+            Une association automatique peut être fausse sans que rien ne le
+            signale : deux homonymes se valent à 1,00 de confiance. Ce bouton
+            est le seul moyen de rattraper une mauvaise affiche repérée dans la
+            grille.
+          */}
+          <Link
+            to={`/review?work=movie-${data.id}`}
+            className="mt-4 inline-block rounded-md border border-zinc-800 px-3 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-600 hover:text-zinc-200"
+          >
+            Corriger l’association
+          </Link>
         </div>
       </header>
 

@@ -13,7 +13,11 @@ import path from 'node:path';
 import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
 
+import { registerReviewRoutes } from './api/review.js';
 import { registerRoutes } from './api/routes.js';
+import { ImageDownloader } from './metadata/images.js';
+import { TmdbClient } from './metadata/tmdb.js';
+import type { EnrichContext } from './metadata/enrich.js';
 import { loadConfig, loadEnvFile, REPO_ROOT, resolveDatabasePath, resolveImagesPath } from './config.js';
 import { openDatabase } from './db/index.js';
 
@@ -31,6 +35,23 @@ async function main(): Promise<void> {
   const app = Fastify({ logger: { transport: undefined, level: 'info' } });
 
   registerRoutes(app, db);
+
+  /*
+   * Le client TMDB est construit à la première demande, et une seule fois.
+   *
+   * Le construire au démarrage ferait échouer le serveur entier quand le jeton
+   * manque, alors que seul l'écran de review en a besoin : la consultation de
+   * la bibliothèque, elle, n'appelle jamais TMDB.
+   */
+  let enrichContext: EnrichContext | null = null;
+  registerReviewRoutes(app, db, () => {
+    enrichContext ??= {
+      db,
+      client: new TmdbClient({ cacheDir: path.join(REPO_ROOT, 'data', 'tmdb-cache') }),
+      images: new ImageDownloader(imagesPath),
+    };
+    return enrichContext;
+  });
 
   /*
    * Affiches téléchargées par `npm run metadata`.

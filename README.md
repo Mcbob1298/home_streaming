@@ -33,6 +33,7 @@ Puis ouvrez http://localhost:5173.
 | `npm run scan`  | Parcourt les racines et met à jour l'index. **À lancer à la main**        |
 | `npm run probe` | Sonde les fichiers avec ffprobe (codecs, définition, durée, pistes)       |
 | `npm run metadata` | Apparie avec TMDB et télécharge les affiches                          |
+| `npm run cleanup` | Supprime les œuvres sans fichier et les images inutilisées             |
 | `npm test`      | Tests unitaires du parser                                                |
 | `npm run build` | Compile le serveur (`server/dist`) et l'interface (`web/dist`)           |
 | `npm start`     | Lance le serveur compilé, qui sert aussi l'interface si elle est buildée  |
@@ -438,6 +439,51 @@ le navigateur ne voit qu'une seule origine. En production, le serveur sert le
 front lui-même.
 
 ---
+
+## Pièges connus
+
+Trois comportements contre-intuitifs, qui ont chacun coûté un aller-retour.
+
+### `npm run scan` ne re-parse RIEN après une modification du parser
+
+C'est le piège le plus déroutant. Le scan est incrémental : il compare la taille
+et la date de modification de chaque fichier à ce qu'il a en base. Si elles n'ont
+pas bougé — et corriger le parser ne touche évidemment pas aux fichiers du NAS —
+**aucun fichier n'est considéré comme modifié, donc aucun n'est re-parsé**. Le
+scan affiche « 2364 inchangés », se termine sans erreur, et les titres restent
+exactement les mêmes qu'avant votre correction.
+
+Après toute modification du parser :
+
+```bash
+npm run scan -- --full
+```
+
+### Un `--full` peut laisser des œuvres orphelines
+
+Une œuvre est identifiée par (titre normalisé, année). Quand le parser corrigé
+donne un nouveau titre à un fichier, celui-ci rejoint une **nouvelle** fiche, et
+l'ancienne se retrouve sans aucun fichier. Elle n'apparaît nulle part dans
+l'interface, mais elle reste en base avec ses affiches.
+
+Enchaînez donc :
+
+```bash
+npm run scan -- --full
+npm run cleanup          # liste, demande confirmation, puis supprime
+npm run metadata
+```
+
+`npm run cleanup -- --dry-run` montre sans rien toucher ; `--yes` évite la
+question.
+
+### Les scripts de la racine se terminent par `--`
+
+Dans [package.json](package.json), les scripts s'écrivent
+`npm --prefix server run scan --`. Ce `--` final n'est pas une coquille : sans
+lui, `npm run scan -- --full` verrait npm interpréter `--full` comme une de ses
+propres options (avec un avertissement « Unknown cli config ») au lieu de la
+transmettre au script imbriqué. L'option serait silencieusement perdue.
 
 ## Notes et limites connues
 

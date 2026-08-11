@@ -238,6 +238,24 @@ export async function applyTmdbId(
     candidates: [],
     searchedTitle: work?.title ?? '',
     searchedYear: work?.year ?? null,
+    manual: true,
+  });
+}
+
+/** Marque une œuvre comme volontairement laissée sans métadonnées. */
+export function ignoreWork(db: EnrichContext['db'], type: TargetType, id: number): void {
+  const work = getWork(db, type, id);
+  recordMatch(db, {
+    type,
+    id,
+    status: 'ignored',
+    tmdbId: null,
+    confidence: null,
+    reason: 'ignorée à la demande',
+    candidates: [],
+    searchedTitle: work?.title ?? '',
+    searchedYear: work?.year ?? null,
+    manual: true,
   });
 }
 

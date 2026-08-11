@@ -66,12 +66,20 @@ export function fingerprintOf(row: WorkRow): string {
   return `${row.title}|${row.year ?? ''}`;
 }
 
-/** Une correspondance déjà validée à la main ne doit jamais être écrasée. */
+/**
+ * Une décision humaine a-t-elle déjà été prise sur cette œuvre ?
+ *
+ * Deux formes : un appariement choisi à la main, ou une entrée volontairement
+ * ignorée. Dans les deux cas les passes automatiques passent leur chemin, quelle
+ * que soit la confiance qu'elles obtiendraient — sinon un `--full` effacerait
+ * silencieusement le travail de tri fait dans l'écran de review.
+ */
 export function isManuallyResolved(db: Db, type: TargetType, id: number): boolean {
   const row = db
-    .prepare('SELECT status FROM tmdb_match WHERE target_type = ? AND target_id = ?')
-    .get(type, id) as { status: MatchStatus } | undefined;
-  return row?.status === 'ignored';
+    .prepare('SELECT status, manually_matched FROM tmdb_match WHERE target_type = ? AND target_id = ?')
+    .get(type, id) as { status: MatchStatus; manually_matched: number } | undefined;
+  if (row === undefined) return false;
+  return row.status === 'ignored' || row.manually_matched === 1;
 }
 
 export interface RecordMatchInput {
@@ -84,24 +92,29 @@ export interface RecordMatchInput {
   candidates: ScoredCandidate[];
   searchedTitle: string;
   searchedYear: number | null;
+  /** Décision prise dans l'écran de review : à protéger des passes automatiques. */
+  manual?: boolean;
 }
 
 export function recordMatch(db: Db, input: RecordMatchInput): void {
+  const manual = input.manual === true;
   db.prepare(
     `INSERT INTO tmdb_match
        (target_type, target_id, status, tmdb_id, confidence, reason, candidates_json,
-        searched_title, searched_year, updated_at)
+        searched_title, searched_year, updated_at, manually_matched, decided_at)
      VALUES (@target_type, @target_id, @status, @tmdb_id, @confidence, @reason, @candidates_json,
-             @searched_title, @searched_year, @updated_at)
+             @searched_title, @searched_year, @updated_at, @manually_matched, @decided_at)
      ON CONFLICT(target_type, target_id) DO UPDATE SET
-       status          = excluded.status,
-       tmdb_id         = excluded.tmdb_id,
-       confidence      = excluded.confidence,
-       reason          = excluded.reason,
-       candidates_json = excluded.candidates_json,
-       searched_title  = excluded.searched_title,
-       searched_year   = excluded.searched_year,
-       updated_at      = excluded.updated_at`,
+       status           = excluded.status,
+       tmdb_id          = excluded.tmdb_id,
+       confidence       = excluded.confidence,
+       reason           = excluded.reason,
+       candidates_json  = excluded.candidates_json,
+       searched_title   = excluded.searched_title,
+       searched_year    = excluded.searched_year,
+       updated_at       = excluded.updated_at,
+       manually_matched = excluded.manually_matched,
+       decided_at       = excluded.decided_at`,
   ).run({
     target_type: input.type,
     target_id: input.id,
@@ -113,6 +126,8 @@ export function recordMatch(db: Db, input: RecordMatchInput): void {
     searched_title: input.searchedTitle,
     searched_year: input.searchedYear,
     updated_at: nowIso(),
+    manually_matched: manual ? 1 : 0,
+    decided_at: manual ? nowIso() : null,
   });
 }
 
