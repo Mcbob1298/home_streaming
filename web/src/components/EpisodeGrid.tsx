@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { EpisodeSummary } from '../api';
+import type { EpisodeProgress, EpisodeSummary } from '../api';
 import { formatMinutes } from './DetailChrome';
 import {
   MAX_COLUMNS,
@@ -12,7 +12,7 @@ import {
   measuredRowHeight,
   spacers,
 } from './episodeGridLayout';
-import { RAISED } from './MediaTile';
+import { RAISED, TileProgress } from './MediaTile';
 
 /**
  * Épisodes en grille de vignettes 16:9.
@@ -28,7 +28,14 @@ import { RAISED } from './MediaTile';
  * episodeGridLayout.ts, où ils sont testables sans navigateur.
  */
 
-export function EpisodeGrid({ episodes }: { episodes: EpisodeSummary[] }) {
+export function EpisodeGrid({
+  episodes,
+  progress,
+}: {
+  episodes: EpisodeSummary[];
+  /** Progression par identifiant d'épisode. Vide tant qu'elle n'est pas chargée. */
+  progress?: Map<number, EpisodeProgress>;
+}) {
   const container = useRef<HTMLDivElement>(null);
   const grid = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(MAX_COLUMNS);
@@ -119,7 +126,7 @@ export function EpisodeGrid({ episodes }: { episodes: EpisodeSummary[] }) {
         style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
       >
         {visible.map((episode) => (
-          <EpisodeCard key={episode.id} episode={episode} />
+          <EpisodeCard key={episode.id} episode={episode} progress={progress?.get(episode.id)} />
         ))}
       </div>
       {virtualize && <div style={{ height: after }} aria-hidden="true" />}
@@ -127,7 +134,13 @@ export function EpisodeGrid({ episodes }: { episodes: EpisodeSummary[] }) {
   );
 }
 
-function EpisodeCard({ episode }: { episode: EpisodeSummary }) {
+function EpisodeCard({
+  episode,
+  progress,
+}: {
+  episode: EpisodeSummary;
+  progress: EpisodeProgress | undefined;
+}) {
   const numbering =
     episode.episodeNumberEnd === null
       ? episode.episodeNumber
@@ -156,7 +169,9 @@ function EpisodeCard({ episode }: { episode: EpisodeSummary }) {
               alt=""
               loading="lazy"
               decoding="async"
-              className="h-full w-full object-cover"
+              // Un épisode vu s'efface un peu : on repère d'un coup d'œil où on
+              // en est dans une saison de vingt-quatre vignettes.
+              className={`h-full w-full object-cover ${progress?.watched === true ? 'opacity-55' : ''}`}
             />
           )}
           <div
@@ -165,6 +180,13 @@ function EpisodeCard({ episode }: { episode: EpisodeSummary }) {
           />
 
           <PlayBadge mediaFileId={episode.mediaFileId} title={episode.title} />
+
+          {progress?.watched === true && <WatchedMark />}
+
+          {/* Épisode en cours : la même barre que sur les vignettes de l'accueil. */}
+          {progress !== undefined && !progress.watched && progress.ratio > 0 && (
+            <TileProgress ratio={progress.ratio} />
+          )}
 
           {/* TEMPORAIRE — repère de mise au point du lecteur. Disparaîtra avec
               l'arrivée du transcodage, quand tout sera lisible. */}
@@ -199,6 +221,27 @@ function EpisodeCard({ episode }: { episode: EpisodeSummary }) {
         </p>
       </div>
     </div>
+  );
+}
+
+/**
+ * Marque « vu », en haut à gauche.
+ *
+ * Elle est titrée et non purement décorative : sur une saison entière, la seule
+ * différence d'opacité de l'image ne suffit pas à trancher entre « vu » et
+ * « vignette sombre ».
+ */
+function WatchedMark() {
+  return (
+    <span
+      title="Épisode vu"
+      className="absolute top-3 left-3 flex h-6 w-6 items-center justify-center rounded-full bg-[rgba(0,168,225,0.92)] text-fond"
+    >
+      <span className="sr-only">Épisode vu</span>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m5 13 4 4 10-10" />
+      </svg>
+    </span>
   );
 }
 

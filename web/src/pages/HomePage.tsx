@@ -2,6 +2,7 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 
 import { api, type MovieSummary, type ShowSummary } from '../api';
+import { ContinueRow } from '../components/ContinueRow';
 import { Hero, type HeroItem } from '../components/Hero';
 import { MediaRow } from '../components/MediaRow';
 import { ErrorMessage, Loading } from '../components/States';
@@ -124,6 +125,10 @@ export function HomePage() {
         collerait la rangée aux points ; plus large, la page paraîtrait vide.
       */}
       <div className="mt-14 flex flex-col gap-[26px]">
+        {/* En tête : reprendre ce qu'on a commencé passe avant tout le reste.
+            La rangée se retire d'elle-même quand il n'y a rien à reprendre. */}
+        <ContinueRow />
+
         <MediaRow title="Ajouts récents">{recent.data.items.map(movieTile)}</MediaRow>
         <MediaRow title="Films" to="/library/films">
           {films.data.items.map(movieTile)}

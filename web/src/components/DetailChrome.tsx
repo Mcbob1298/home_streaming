@@ -113,6 +113,51 @@ export function PlayButton({ mediaFileId, label = 'Lire' }: { mediaFileId: numbe
   );
 }
 
+/**
+ * Le duo de lecture d'une fiche : reprendre, ou repartir du début.
+ *
+ * Sans progression, un seul bouton — « Depuis le début » n'aurait aucun sens à
+ * côté de « Lire ». Dès qu'il y a quelque chose à reprendre, le bouton principal
+ * l'annonce avec la position, et le secondaire offre l'autre choix par une URL
+ * explicite : `?t=0` impose le point de départ au lecteur.
+ */
+export function PlayButtons({
+  mediaFileId,
+  resumeSeconds,
+  label = 'Lire',
+  resumeLabel,
+}: {
+  mediaFileId: number | null;
+  resumeSeconds: number;
+  label?: string;
+  /** Remplace « Reprendre à 1 h 13 » — une série y met plutôt « Reprendre S01:E04 ». */
+  resumeLabel?: string;
+}) {
+  if (mediaFileId === null || resumeSeconds <= 0) {
+    return <PlayButton mediaFileId={mediaFileId} label={label} />;
+  }
+
+  return (
+    <>
+      <PlayButton
+        mediaFileId={mediaFileId}
+        label={resumeLabel ?? `Reprendre à ${positionLabel(resumeSeconds)}`}
+      />
+      <Link
+        to={`/watch/${mediaFileId}?t=0`}
+        className="flex h-12 items-center rounded border border-[rgba(249,249,249,0.28)] px-6 text-[14px] font-semibold text-texte transition-colors hover:border-texte"
+      >
+        Depuis le début
+      </Link>
+    </>
+  );
+}
+
+/** 4380 secondes → « 1 h 13 ». Jamais « 0 min » : une position existe ou pas. */
+export function positionLabel(seconds: number): string {
+  return formatMinutes(Math.max(1, Math.round(seconds / 60))) ?? '1 min';
+}
+
 /** Bouton rond d'action secondaire. */
 export function RoundButton({ label, children }: { label: string; children: React.ReactNode }) {
   return (

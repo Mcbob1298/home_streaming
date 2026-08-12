@@ -112,6 +112,13 @@ describe('countSegmentsBefore', () => {
 });
 
 describe('ffprobeFor', () => {
+  it('prend ffprobe A COTE du binaire jellyfin, pas celui du systeme', () => {
+    // Le systeme a son propre ffprobe 5.1 dans le PATH. Le deduire du dossier
+    // du binaire retenu est ce qui garantit que les deux versions ne se
+    // melangent pas.
+    expect(ffprobeFor('/usr/lib/jellyfin-ffmpeg/ffmpeg')).toBe('/usr/lib/jellyfin-ffmpeg/ffprobe');
+  });
+
   it('déduit ffprobe du chemin de ffmpeg', () => {
     expect(ffprobeFor('C:\\ff\\bin\\ffmpeg.exe')).toBe('C:\\ff\\bin\\ffprobe.exe');
     expect(ffprobeFor('/usr/bin/ffmpeg')).toBe('/usr/bin/ffprobe');

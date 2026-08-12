@@ -42,7 +42,30 @@ export interface PlayableFile {
   container: string | null;
   videoCodec: string | null;
   audioCodec: string | null;
+  /** Type de HDR détecté, ou null en SDR. Décide du tone mapping. */
+  hdr?: string | null;
 }
+
+/**
+ * Codecs vidéo qu'on sait réencoder.
+ *
+ * La liste est FERMÉE : un codec inconnu part en « unsupported » avec son nom,
+ * plutôt que d'être lancé dans un transcodage qui échouera après trente
+ * secondes d'attente. Elle couvre 993 des 993 fichiers non-H.264 de la
+ * bibliothèque — 956 HEVC, 35 MPEG-4, 2 AV1.
+ */
+export const TRANSCODABLE_VIDEO_CODECS = [
+  'hevc',
+  'h265',
+  'mpeg4',
+  'av1',
+  'vp9',
+  'vp8',
+  'mpeg2video',
+  'vc1',
+  'msmpeg4v3',
+  'wmv3',
+] as const;
 
 export interface PlaybackDecision {
   mediaFileId: number;
@@ -238,11 +261,35 @@ export function decidePlayback(
     };
   }
 
+  /*
+   * La vidéo doit être réencodée. C'est le mode le plus coûteux — mesuré à ×5
+   * en 4K sur le NAS — mais il couvre les 993 fichiers restants.
+   */
+  if (includes(TRANSCODABLE_VIDEO_CODECS, file.videoCodec)) {
+    if (options.remuxAvailable !== true) {
+      return {
+        ...common,
+        mode: 'unsupported',
+        source: null,
+        reason:
+          'Ce fichier demande un transcodage, mais ffmpeg est introuvable sur le serveur. ' +
+          'Renseigner FFMPEG_PATH dans .env, puis relancer le serveur.',
+      };
+    }
+
+    return {
+      ...common,
+      mode: 'transcode',
+      source: { url: urls.hls, type: 'hls' },
+      reason: `${capitalize(joinFrench(blockers))} : la vidéo est réencodée en H.264.`,
+    };
+  }
+
   return {
     ...common,
     mode: 'unsupported',
     source: null,
-    reason: `${capitalize(joinFrench(blockers))} : ce fichier n’est pas lisible tel quel dans un navigateur.`,
+    reason: `${capitalize(joinFrench(blockers))} : ce codec vidéo n’est pas pris en charge.`,
   };
 }
 
@@ -273,6 +320,12 @@ export function remuxSql(alias = 'media_file'): string {
     lower(${alias}.video_codec) IN (${list(DIRECT_VIDEO_CODECS)})
     AND NOT ${directPlaySql(alias)}
   )`;
+}
+
+/** Fichiers dont la vidéo doit être réencodée. */
+export function transcodeSql(alias = 'media_file'): string {
+  const list = (values: readonly string[]): string => values.map((value) => `'${value}'`).join(', ');
+  return `(lower(${alias}.video_codec) IN (${list(TRANSCODABLE_VIDEO_CODECS)}))`;
 }
 
 /**

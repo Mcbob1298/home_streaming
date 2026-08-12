@@ -12,53 +12,26 @@ import { stat } from 'node:fs/promises';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import type { Db } from '../db/index.js';
+import { findMedia, resolvePlayback, type MediaRow, type ResolvedPlayback } from '../playback/resolve.js';
 import type { SessionManager } from '../transcode/manager.js';
-import { segmentPlanOf } from '../transcode/plan.js';
-import { buildPlaylist, segmentFileName, type PlannedSegment } from '../transcode/segments.js';
-
-interface MediaRow {
-  id: number;
-  path: string;
-  rawPath: string | null;
-  durationSeconds: number | null;
-  sizeBytes: number;
-  mtimeMs: number;
-}
-
-function findMedia(db: Db, id: number): MediaRow | undefined {
-  return db
-    .prepare(
-      `SELECT id, path, raw_path AS rawPath, duration_seconds AS durationSeconds,
-              size_bytes AS sizeBytes, mtime_ms AS mtimeMs
-       FROM media_file WHERE id = ? AND present = 1`,
-    )
-    .get(id) as MediaRow | undefined;
-}
+import { buildPlaylist, segmentFileName } from '../transcode/segments.js';
+import { streamUrlOf } from './stream.js';
 
 /**
- * Plan de découpe d'un fichier, calqué sur ses images clés.
+ * Résout une lecture pour les routes HLS.
  *
- * Le premier appel énumère les images clés (~2 s pour un film de deux heures) ;
- * les suivants lisent le cache en base. Le plan doit être IDENTIQUE pour le
- * manifeste et pour la session, sinon le lecteur réclamerait des segments que
- * ffmpeg ne produira jamais.
+ * La décision, le plan et les paramètres de session viennent tous de la même
+ * fonction que la route de playability : deux résolutions divergentes
+ * produiraient un manifeste que la session ne sait pas honorer.
  */
-async function planOf(
-  db: Db,
-  manager: SessionManager,
-  media: MediaRow,
-): Promise<PlannedSegment[]> {
-  if (media.durationSeconds === null || media.durationSeconds <= 0) return [];
-
-  const { segments } = await segmentPlanOf(db, manager.ffmpegBinary, {
-    id: media.id,
-    inputPath: media.rawPath ?? media.path,
-    durationSeconds: media.durationSeconds,
-    sizeBytes: media.sizeBytes,
-    mtimeMs: media.mtimeMs,
-  });
-
-  return segments;
+async function resolve(db: Db, manager: SessionManager, media: MediaRow): Promise<ResolvedPlayback> {
+  return resolvePlayback(
+    db,
+    manager.ffmpegBinary,
+    media,
+    { file: streamUrlOf(media.id), hls: hlsUrlOf(media.id) },
+    { transcodeAvailable: true },
+  );
 }
 
 function readId(value: unknown): number | null {
@@ -116,12 +89,16 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       return reply.code(404).send({ error: 'Ce fichier n’est pas dans l’index, ou il n’est plus sur le disque.' });
     }
 
-    const plan = await planOf(db, manager, media);
+    const resolved = await resolve(db, manager, media);
+    const plan = resolved.plan;
+
     if (plan.length === 0) {
       return reply.code(409).send({
         error:
-          'Le découpage de ce fichier est impossible : sa durée est inconnue, ou ffprobe n’y a ' +
-          'trouvé aucune image clé. Lancer « npm run probe » puis réessayer.',
+          resolved.decision.mode === 'unsupported'
+            ? resolved.decision.reason
+            : 'Le découpage de ce fichier est impossible : sa durée est inconnue, ou ffprobe n’y a ' +
+              'trouvé aucune image clé. Lancer « npm run probe » puis réessayer.',
       });
     }
 
@@ -135,6 +112,8 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       mediaFileId: id,
       inputPath: media.rawPath ?? media.path,
       plan,
+      mode: resolved.decision.mode === 'transcode' ? 'transcode' : 'remux',
+      source: resolved.source,
     });
     if (session.status.state === 'idle') void session.startAt(0);
 
@@ -159,10 +138,13 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     const media = findMedia(db, id);
     if (media === undefined) return reply.code(404).send({ error: 'Fichier inconnu.' });
 
+    const resolved = await resolve(db, manager, media);
     const session = await manager.acquire({
       mediaFileId: id,
       inputPath: media.rawPath ?? media.path,
-      plan: await planOf(db, manager, media),
+      plan: resolved.plan,
+      mode: resolved.decision.mode === 'transcode' ? 'transcode' : 'remux',
+      source: resolved.source,
     });
 
     const file = await session.ensureInit();
@@ -192,13 +174,15 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     const media = findMedia(db, id);
     if (media === undefined) return reply.code(404).send({ error: 'Fichier inconnu.' });
 
-    const plan = await planOf(db, manager, media);
-    if (index >= plan.length) return reply.code(404).send({ error: 'Segment hors du fichier.' });
+    const resolved = await resolve(db, manager, media);
+    if (index >= resolved.plan.length) return reply.code(404).send({ error: 'Segment hors du fichier.' });
 
     const session = await manager.acquire({
       mediaFileId: id,
       inputPath: media.rawPath ?? media.path,
-      plan,
+      plan: resolved.plan,
+      mode: resolved.decision.mode === 'transcode' ? 'transcode' : 'remux',
+      source: resolved.source,
     });
 
     const file = await session.ensureSegment(index);

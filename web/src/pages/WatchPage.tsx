@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { api, type Playability } from '../api';
 import { PlayerChrome } from '../components/player/PlayerChrome';
@@ -12,6 +12,8 @@ import {
   seekTo,
   volumeAfter,
 } from '../components/player/playerControls';
+import { resumeAt, usableDuration } from '../components/player/progressReporting';
+import { useProgressReporting } from '../components/player/useProgressReporting';
 import { ErrorMessage, Loading } from '../components/States';
 
 /**
@@ -28,6 +30,15 @@ import { ErrorMessage, Loading } from '../components/States';
  */
 export function WatchPage() {
   const { mediaFileId = '' } = useParams();
+  const [search] = useSearchParams();
+
+  /*
+   * `?t=` impose le point de départ et l'emporte sur la position enregistrée.
+   * C'est ce qui fait marcher « Depuis le début » (`?t=0`) sans avoir à effacer
+   * la progression : on repart de zéro, mais l'entrée reste dans la rangée.
+   */
+  const requested = Number(search.get('t'));
+  const startOverride = search.has('t') && Number.isFinite(requested) && requested >= 0 ? requested : null;
 
   const playability = useQuery({
     queryKey: ['playability', mediaFileId],
@@ -56,7 +67,7 @@ export function WatchPage() {
 
   // La clé force un remontage complet au changement d'épisode : l'état du
   // lecteur — position, tampon, piste active — n'a aucune raison de survivre.
-  return <Player key={data.mediaFileId} data={data} />;
+  return <Player key={data.mediaFileId} data={data} startAt={startOverride ?? data.resumeSeconds} />;
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -127,8 +138,9 @@ function Unsupported({ data }: { data: Playability }) {
   );
 }
 
-function Player({ data }: { data: Playability }) {
+function Player({ data, startAt }: { data: Playability; startAt: number }) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const video = useRef<HTMLVideoElement>(null);
   const container = useRef<HTMLDivElement>(null);
 
@@ -345,6 +357,43 @@ function Player({ data }: { data: Playability }) {
       node.removeEventListener('error', onError);
     };
   }, []);
+
+  /*
+   * Reprise : la tête de lecture est posée AVANT la première image.
+   *
+   * `loadedmetadata` est le premier instant où `currentTime` est modifiable, et
+   * il précède le décodage : le spectateur ne voit donc jamais le début du
+   * fichier avant le saut. Le drapeau garantit qu'on ne le fait qu'une fois —
+   * l'événement se répète sur un manifeste HLS à chaque changement de niveau,
+   * et la lecture reviendrait alors sans cesse au point de reprise.
+   */
+  const resumed = useRef(false);
+  useEffect(() => {
+    const node = video.current;
+    if (node === null) return;
+
+    const apply = () => {
+      if (resumed.current) return;
+      resumed.current = true;
+      const seconds = resumeAt(startAt, usableDuration(node.duration));
+      if (seconds > 0) node.currentTime = seconds;
+    };
+
+    // La métadonnée peut être déjà là quand l'effet s'exécute.
+    if (node.readyState >= HTMLMediaElement.HAVE_METADATA) apply();
+    node.addEventListener('loadedmetadata', apply);
+    return () => node.removeEventListener('loadedmetadata', apply);
+  }, [startAt]);
+
+  /*
+   * Enregistrement de la progression. Le lecteur n'en sait rien de plus : il
+   * donne sa position, le serveur en tire l'état « vu ».
+   */
+  const onWatched = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ['progress'] });
+  }, [queryClient]);
+
+  useProgressReporting(data.mediaFileId, video, onWatched);
 
   const backdrop = data.media?.backdropPath ?? null;
 

@@ -15,6 +15,10 @@ export interface ManagerOptions {
   maxSessions: number;
   /** Une session sans requête depuis ce délai est tuée. */
   idleSeconds: number;
+  /** Accélération retenue au démarrage, après essai réel. */
+  hardware: 'vaapi' | null;
+  device: string;
+  toneMap: SessionOptions['toneMap'];
   onLog: SessionOptions['onLog'];
 }
 
@@ -75,6 +79,9 @@ export class SessionManager {
     const session = new TranscodeSession(input, {
       ffmpegBinary: this.options.ffmpegBinary,
       workDir: this.options.workDir,
+      hardware: this.options.hardware,
+      device: this.options.device,
+      toneMap: this.options.toneMap,
       onLog: this.options.onLog,
     });
     await session.prepare();

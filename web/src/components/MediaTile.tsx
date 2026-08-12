@@ -41,8 +41,34 @@ export interface MediaTileProps {
   badge?: string | null;
   /** Occupe toute la largeur disponible au lieu des 288 px fixes (grilles). */
   fluid?: boolean;
+  /** Avancement entre 0 et 1. Null quand l'œuvre n'a pas été commencée. */
+  progress?: number | null;
+  /** « Il reste 36 min », « Épisode suivant ». Affiché sous la barre. */
+  progressLabel?: string | null;
+  /** Menu contextuel de la rangée « Continuer à regarder ». */
+  actions?: React.ReactNode;
   /** Déclenché au survol et au focus : précharge le détail avant le clic. */
   onPrefetch?: () => void;
+}
+
+/**
+ * Barre de progression, posée au ras du bas de la vignette.
+ *
+ * Elle vit DANS le conteneur agrandi, donc elle grandit avec lui au survol.
+ * Le bleu est celui du lecteur : la même couleur dit la même chose partout.
+ */
+export function TileProgress({ ratio }: { ratio: number }) {
+  return (
+    <div
+      aria-hidden="true"
+      className="absolute right-0 bottom-0 left-0 h-[3px] bg-[rgba(249,249,249,0.3)]"
+    >
+      <div
+        className="h-full bg-[#00A8E1]"
+        style={{ width: `${Math.min(100, Math.max(0, ratio * 100))}%` }}
+      />
+    </div>
+  );
 }
 
 /** Mention posée sur la vignette, discrète mais lisible. */
@@ -94,6 +120,9 @@ export function MediaTile({
   runtimeMinutes,
   badge,
   fluid = false,
+  progress,
+  progressLabel,
+  actions,
   onPrefetch,
 }: MediaTileProps) {
   const imageUrl = backdropUrl ?? posterUrl;
@@ -163,6 +192,20 @@ export function MediaTile({
 
           {badge !== null && badge !== undefined && <TileBadge label={badge} />}
 
+          {/* Au ras du bas, DANS le conteneur agrandi : elle suit le survol. */}
+          {progress !== null && progress !== undefined && progress > 0 && <TileProgress ratio={progress} />}
+
+          {/*
+            Le menu contextuel est posé DANS la couche agrandie mais rendu
+            au-dessus du lien : sans cela, le clic sur le menu suivrait le lien
+            vers la fiche au lieu d'ouvrir le menu.
+          */}
+          {actions !== undefined && (
+            <div className="absolute top-2 right-2 z-[3] opacity-0 transition-opacity duration-[180ms] group-hover:opacity-100 group-focus-within:opacity-100 motion-reduce:transition-none">
+              {actions}
+            </div>
+          )}
+
           <div className="absolute right-[14px] bottom-[12px] left-[14px]">
             {logoUrl !== null ? (
               <img
@@ -201,6 +244,9 @@ export function MediaTile({
       */}
       <div className="h-10 pt-4 opacity-0 transition-opacity duration-[180ms] peer-hover:opacity-100 peer-focus-visible:opacity-100 motion-reduce:transition-none">
         <div className="flex justify-center gap-[7px] text-[12px] text-faible">
+          {progressLabel !== null && progressLabel !== undefined && (
+            <span className="whitespace-nowrap font-semibold text-texte">{progressLabel}</span>
+          )}
           {meta.map((part, index) => (
             <Fragment key={part}>
               {index > 0 && <span className="opacity-45">·</span>}

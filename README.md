@@ -528,6 +528,90 @@ répertoire de travail. Vérifié : zéro processus survivant après fermeture.
 
 `transcode.workDir` est effaçable en totalité — en production ce sera un tmpfs.
 
+### Transcodage vidéo — les 35,5 % restants
+
+Les 993 fichiers dont la vidéo n'est pas en H.264 — 956 HEVC, 35 MPEG-4, 2 AV1 —
+sont **réencodés** en accélération matérielle. Avec les deux modes précédents,
+la bibliothèque est intégralement lisible :
+
+| Mode | Fichiers | Part | Coût |
+| --- | --- | --- | --- |
+| `direct` | 143 | 5,1 % | aucun |
+| `remux` | 1660 | 59,4 % | vidéo copiée, audio réencodé |
+| `transcode` | 993 | 35,5 % | vidéo réencodée sur le GPU |
+| `unsupported` | 0 | 0 % | — |
+
+La liste des codecs réencodables est **fermée** : un codec inconnu est refusé en
+le nommant, plutôt que lancé dans un transcodage qui échouerait après trente
+secondes d'attente.
+
+### Trois chaînes de filtres, et pourquoi
+
+`tonemap_vaapi` ne fait **que** la conversion de plage dynamique. Ses seules
+options, relevées par `ffmpeg -h filter=tonemap_vaapi` sur la machine cible,
+sont `format`, `matrix`, `primaries` et `transfer` — **aucune dimension**. Lui
+en passer fait échouer l'initialisation du filtre.
+
+| Source | Chaîne |
+| --- | --- |
+| SDR | `scale_vaapi=format=nv12` |
+| HDR10 / HLG | `scale_vaapi=w=W:h=H,tonemap_vaapi=format=nv12:matrix=bt709:primaries=bt709:transfer=bt709` |
+| Dolby Vision profil 8 | identique au HDR10 |
+
+Trois décisions à ne pas défaire :
+
+- **Le redimensionnement précède le tone mapping.** Tone-mapper en 4K puis
+  réduire ferait travailler le moteur sur quatre fois plus de pixels.
+- **Le `scale_vaapi` qui précède un tone mapping n'impose pas `format`.** Réduire
+  en nv12 8 bits avant de convertir écrêterait les hautes lumières — exactement
+  ce que le tone mapping doit éviter.
+- **Aucun filtre logiciel dans la chaîne.** Un seul `format=` ou `scale=` mal
+  placé force un aller-retour vers la mémoire centrale. Un test vérifie que
+  chaque filtre se termine par `_vaapi`.
+
+Les dimensions sont **calculées**, jamais déléguées à `-2` : la résolution
+source est connue, et la prise en charge de cette convention par `scale_vaapi`
+n'est pas documentée dans ffmpeg 5.1. Une tolérance de 5 % évite de réduire un
+1920×1088 en 1906×1080 — le bourrage en macroblocs du H.264 n'est pas du 1440p.
+
+### Dolby Vision : le profil décide
+
+Un profil 7 ou 8 porte une couche de base rétro-compatible, qu'on tone-mappe
+comme n'importe quel HDR10. Un profil 5 n'a **aucun repli** : le traiter
+pareillement produit une image verdâtre. Sondé sur la bibliothèque :
+
+```
+profil 8 — compat 1     93 fichiers    couche de base HDR10, traitable
+profil 5 — compat 0      1 fichier     refusé, avec son profil dans le message
+```
+
+Le profil est sondé à la demande — quelques centaines de millisecondes de
+lecture d'en-tête, pour les 94 fichiers concernés — et mémorisé dans
+`media_file.dv_profile`.
+
+### Les images clés deviennent exactes
+
+En transcodage la vidéo est réencodée, donc les images clés se placent où l'on
+veut : `-force_key_frames expr:gte(t,n_forced*N)`. La découpe **2/2/2/4 suit
+exactement le manifeste**, sans énumération préalable. C'est ce que le remux ne
+peut pas garantir, puisqu'il ne coupe qu'aux images clés existantes.
+
+### Deux pièges d'encodage
+
+- **H.264 10 bits.** Une source 10 bits produit du `High 10 / yuv420p10le`
+  qu'aucun navigateur ne décode. Le format est imposé — `format=nv12` côté
+  VAAPI, `format=yuv420p` plus `-pix_fmt yuv420p` côté logiciel — jamais hérité.
+- **Downmix audio.** Le comportement par défaut de ffmpeg enterre le canal
+  central, donc les dialogues, sous la musique. Une matrice explicite remonte la
+  voix à 0,8 quand les surrounds descendent à 0,5.
+
+### Sélection des flux
+
+Avatar contient 27 flux : 1 vidéo, 6 audio, 16 sous-titres, 2 polices TrueType
+et 2 images de couverture. Sans sélection explicite, ffmpeg tente d'en faire
+quelque chose et échoue sur les polices. D'où `-map 0:v:0 -map 0:a:0?` suivi de
+`-sn -dn -map_chapters -1`.
+
 ### Repérage temporaire
 
 Les 143 fichiers lisibles sont éparpillés dans la bibliothèque, ce qui rend les
@@ -575,8 +659,20 @@ protéger.
 | Source | copiée et compilée dans l'image | **montée en volume**, `tsx watch` |
 | Interface | servie par Fastify | servie par Vite sur le poste |
 | Port | 3000 | 3001 |
-| Après un changement de code | reconstruire l'image | rien, le serveur redémarre seul |
+| Après un changement de code | reconstruire l'image | le serveur redémarre seul |
 | Après un changement de `package.json` | reconstruire | reconstruire |
+
+**Si une modification ne prend pas effet**, redémarrer le conteneur :
+
+```bash
+sudo docker compose -f compose.dev.yaml restart
+```
+
+Les événements inotify d'un montage bind ne traversent pas toujours la
+frontière du conteneur — constaté ici, le serveur continuait à servir l'ancien
+code sans le moindre signe, et l'erreur corrigée réapparaissait à l'identique.
+`CHOKIDAR_USEPOLLING` fait scruter le surveillant plutôt qu'écouter, ce qui
+règle le cas ; le redémarrage reste le recours certain.
 
 ```bash
 # production

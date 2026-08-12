@@ -7,7 +7,7 @@ import {
   DetailBackdrop,
   ICONS,
   MetaLine,
-  PlayButton,
+  PlayButtons,
   RoundButton,
   Synopsis,
   Tabs,
@@ -29,6 +29,15 @@ export function ShowPage() {
 
   const show = useQuery({ queryKey: ['show', id], queryFn: () => api.show(id) });
 
+  // Progression : cache court, comme sur la fiche film. La grille et le bouton
+  // s'affichent sans l'attendre, puis se complètent.
+  const progress = useQuery({
+    queryKey: ['progress', 'show', id],
+    queryFn: () => api.showProgress(id),
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+
   // Saison retenue par défaut : la première non vide, hors bonus.
   useEffect(() => {
     if (season !== null || show.data === undefined) return;
@@ -49,6 +58,19 @@ export function ShowPage() {
   // commence une série qu'on n'a pas encore vue.
   const firstSeason = data.seasons.find((entry) => entry.seasonNumber > 0) ?? data.seasons[0];
   const firstEpisode = firstSeason?.episodes[0];
+
+  /*
+   * Le point de reprise vient du serveur, qui applique la même règle que la
+   * rangée d'accueil. Sans reprise, on ouvre le premier épisode.
+   *
+   * `next` désigne l'épisode SUIVANT, jamais commencé : le bouton dit alors
+   * « Lire S02:E01 » et non « Reprendre », qui laisserait croire à une position
+   * en cours.
+   */
+  const resume = progress.data?.resume ?? null;
+  const episodeProgress = new Map(
+    (progress.data?.episodes ?? []).map((entry) => [entry.episodeId, entry]),
+  );
 
   const yearRange =
     data.year === null
@@ -108,8 +130,12 @@ export function ShowPage() {
           {shortSynopsis(data.overview) !== null && <Synopsis text={shortSynopsis(data.overview) as string} />}
 
           <div className="mt-[30px] flex items-center gap-4">
-            {/* Sur une série, « Lire » ouvre le premier épisode disponible. */}
-            <PlayButton mediaFileId={firstEpisode?.mediaFileId ?? null} label="Lire" />
+            <PlayButtons
+              mediaFileId={resume?.mediaFileId ?? firstEpisode?.mediaFileId ?? null}
+              resumeSeconds={resume?.positionSeconds ?? 0}
+              label={resume === null ? 'Lire' : `Lire ${resume.numbering}`}
+              resumeLabel={resume === null ? undefined : `Reprendre ${resume.numbering}`}
+            />
             <div className="flex gap-3">
               <RoundButton label="Ajouter à ma liste">{ICONS.plus}</RoundButton>
               <RoundButton label="Partager">{ICONS.share}</RoundButton>
@@ -146,7 +172,7 @@ export function ShowPage() {
                 plus grandes qu'avant sans qu'on ne voie plus qu'un épisode.
               */
               <div className="max-w-[1400px]">
-                <EpisodeGrid episodes={current.episodes} />
+                <EpisodeGrid episodes={current.episodes} progress={episodeProgress} />
               </div>
             )}
           </section>

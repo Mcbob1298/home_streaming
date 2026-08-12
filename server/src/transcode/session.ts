@@ -16,6 +16,8 @@ import { copyFile, mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { buildRemuxArgs, planRuns, type RunPlan } from './args.js';
+import type { ToneMapBackend } from './capabilities.js';
+import { buildTranscodeArgs, type HdrKind } from './encode.js';
 import {
   INIT_FILE_NAME,
   PRIMER_COUNT,
@@ -53,7 +55,25 @@ const RESTART_TOLERANCE = 12;
 export interface SessionOptions {
   ffmpegBinary: string;
   workDir: string;
+  /** Accélération retenue au démarrage, après essai réel. */
+  hardware: 'vaapi' | null;
+  device: string;
+  /** Moteur de tone mapping retenu au démarrage, après essai réel. */
+  toneMap: ToneMapBackend | null;
   onLog: (message: string, details?: Record<string, unknown>) => void;
+}
+
+/**
+ * Ce qu'il faut savoir de la source pour la réencoder.
+ *
+ * Absent en remux, où la vidéo est copiée sans jamais être regardée.
+ */
+export interface SourceInfo {
+  width: number | null;
+  height: number | null;
+  frameRate: number | null;
+  hdr: HdrKind;
+  audioChannels: number | null;
 }
 
 export interface SessionInput {
@@ -61,6 +81,13 @@ export interface SessionInput {
   /** Chemin EXACT du fichier, tel que readdir l'a rendu. */
   inputPath: string;
   plan: PlannedSegment[];
+  /**
+   * `remux` copie la vidéo, `transcode` la réencode. La distinction vient de la
+   * décision de lecture et ne se devine pas ici : réencoder une vidéo déjà en
+   * H.264 coûterait des minutes au lieu de secondes.
+   */
+  mode: 'remux' | 'transcode';
+  source?: SourceInfo;
 }
 
 export type SessionState = 'idle' | 'running' | 'finished' | 'failed';
@@ -201,7 +228,7 @@ export class TranscodeSession {
       return;
     }
 
-    const args = buildRemuxArgs({
+    const common = {
       input: this.input.inputPath,
       startTime: run.startTime,
       startNumber: run.startNumber,
@@ -209,7 +236,23 @@ export class TranscodeSession {
       endTime: run.endTime,
       outputDir: this.dir,
       audioStreamIndex: null,
-    });
+    };
+
+    const source = this.input.source;
+    const args =
+      this.input.mode === 'transcode'
+        ? buildTranscodeArgs({
+            ...common,
+            sourceWidth: source?.width ?? null,
+            sourceHeight: source?.height ?? null,
+            frameRate: source?.frameRate ?? null,
+            hdr: source?.hdr ?? null,
+            audioChannels: source?.audioChannels ?? null,
+            hardware: this.options.hardware,
+            device: this.options.device,
+            toneMap: this.options.toneMap,
+          })
+        : buildRemuxArgs(common);
 
     const child = spawn(this.options.ffmpegBinary, args, { stdio: ['ignore', 'ignore', 'pipe'] });
     this.child = child;

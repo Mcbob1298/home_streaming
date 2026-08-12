@@ -295,6 +295,99 @@ export interface Playability {
   media: PlaybackContext | null;
   next: { mediaFileId: number; label: string } | null;
   subtitles: SubtitleTrack[];
+  /**
+   * Position de reprise, en secondes. Zéro si l'œuvre n'a jamais été commencée.
+   *
+   * Elle arrive AVEC la décision de lecture, dans la même réponse : demandée à
+   * part, la vidéo démarrerait à zéro puis sauterait sous les yeux du spectateur.
+   */
+  resumeSeconds: number;
+}
+
+// ---------------------------------------------------------------------------
+// Reprise de lecture
+// ---------------------------------------------------------------------------
+
+/** Ce que la progression désigne : un film, ou un épisode précis. Jamais une série. */
+export type MediaType = 'movie' | 'episode';
+
+/**
+ * Une entrée de « Continuer à regarder ».
+ *
+ * La progression est portée par l'ŒUVRE : `mediaId` désigne le film ou
+ * l'épisode dont la position est retenue, `workId` le film ou la SÉRIE dont la
+ * fiche s'ouvre au clic.
+ */
+export interface ContinueEntry {
+  kind: 'movie' | 'show';
+  workId: number;
+  title: string;
+  subtitle: string | null;
+  mediaFileId: number;
+  positionSeconds: number;
+  /** Entre 0 et 1, pour la barre de la vignette. */
+  ratio: number;
+  /** « Il reste 36 min », ou « Épisode suivant ». */
+  label: string;
+  updatedAt: string;
+  backdropPath: string | null;
+  backdropSrcSet: string | null;
+  logoPath: string | null;
+  logoSrcSet: string | null;
+  posterPath: string | null;
+  posterSrcSet: string | null;
+  year: number | null;
+  genres: string[];
+  mediaType: MediaType;
+  mediaId: number;
+}
+
+/** Ce que le lecteur envoie. Des faits : jamais le verdict « vu », qui est au serveur. */
+export interface ProgressReport {
+  mediaFileId: number;
+  positionSeconds: number;
+  durationSeconds: number | null;
+}
+
+export interface ProgressSnapshot {
+  positionSeconds: number;
+  durationSeconds: number | null;
+  watched: boolean;
+  /** Dernier fichier ouvert, pour rouvrir la même version. Null si jamais commencé. */
+  mediaFileId: number | null;
+}
+
+/** Progression d'un épisode dans la grille d'une série. */
+export interface EpisodeProgress {
+  episodeId: number;
+  positionSeconds: number;
+  durationSeconds: number | null;
+  watched: boolean;
+  /** Entre 0 et 1. Zéro pour un épisode jamais commencé. */
+  ratio: number;
+}
+
+/**
+ * Où reprendre une série.
+ *
+ * `resume` désigne l'épisode en cours, `next` le suivant quand le dernier
+ * regardé est terminé. La règle est celle de la rangée d'accueil : la fiche et
+ * l'accueil ne peuvent pas désigner deux épisodes différents.
+ */
+export interface ShowResume {
+  kind: 'resume' | 'next';
+  episodeId: number;
+  mediaFileId: number;
+  /** « S01:E04 Le goût du risque ». */
+  label: string;
+  /** « S01:E04 » seul, pour les boutons. */
+  numbering: string;
+  positionSeconds: number;
+}
+
+export interface ShowProgress {
+  episodes: EpisodeProgress[];
+  resume: ShowResume | null;
 }
 
 export type SortField = 'title' | 'year' | 'added';
@@ -325,6 +418,24 @@ async function getJson<T>(url: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * Écriture. Même traitement d'erreur que `getJson`, et tolère le 204 sans corps
+ * que renvoient les routes de marquage.
+ */
+async function send<T>(url: string, method: 'POST' | 'DELETE', body?: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`${response.status} — ${message || response.statusText}`);
+  }
+  if (response.status === 204) return null as T;
+  return (await response.json()) as T;
+}
+
 function buildQuery(params: ListParams): string {
   const search = new URLSearchParams();
   if (params.library !== undefined) search.set('library', params.library);
@@ -346,4 +457,26 @@ export const api = {
   show: (id: number | string) => getJson<ShowDetail>(`/api/shows/${id}`),
   playability: (mediaFileId: number | string) =>
     getJson<Playability>(`/api/stream/${mediaFileId}/playability`),
+
+  // --- Reprise de lecture --------------------------------------------------
+  continueWatching: () => getJson<ContinueEntry[]>('/api/progress/continue'),
+
+  progressOf: (mediaType: MediaType, mediaId: number | string) =>
+    getJson<ProgressSnapshot>(`/api/progress/${mediaType}/${mediaId}`),
+
+  /** Progression de tous les épisodes d'une série, et son point de reprise. */
+  showProgress: (showId: number | string) => getJson<ShowProgress>(`/api/progress/show/${showId}`),
+
+  /**
+   * Enregistre une position. Le corps est aussi celui qu'envoie `sendBeacon` à
+   * la fermeture de la page : les deux chemins doivent rester identiques.
+   */
+  saveProgress: (body: ProgressReport) =>
+    send<{ watched: boolean; mediaType: MediaType; mediaId: number }>('/api/progress', 'POST', body),
+
+  setWatched: (mediaType: MediaType, mediaId: number, watched: boolean) =>
+    send<null>(`/api/progress/${mediaType}/${mediaId}/${watched ? 'watched' : 'unwatched'}`, 'POST'),
+
+  forgetProgress: (mediaType: MediaType, mediaId: number) =>
+    send<null>(`/api/progress/${mediaType}/${mediaId}`, 'DELETE'),
 };

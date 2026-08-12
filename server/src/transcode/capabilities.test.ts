@@ -6,6 +6,7 @@ import {
   parseEncoders,
   probeArgs,
   summarizeFailure,
+  toneMapProbeArgs,
   type EncoderProbe,
   type FfmpegCapabilities,
 } from './capabilities.js';
@@ -102,12 +103,14 @@ describe('summarizeFailure', () => {
 
 function capabilities(overrides: Partial<FfmpegCapabilities> = {}): FfmpegCapabilities {
   return {
-    binary: 'ffmpeg',
-    version: 'ffmpeg version 5.1.9',
+    binary: '/usr/lib/jellyfin-ffmpeg/ffmpeg',
+    version: 'ffmpeg version 7.1.4-Jellyfin',
     encoders: new Set(['h264_qsv', 'h264_vaapi', 'libx264', 'aac']),
     hardware: 'vaapi',
     device: DEFAULT_RENDER_NODE,
     probes: [],
+    toneMap: 'libplacebo',
+    toneMapProbes: [{ backend: 'libplacebo', ok: true, error: null, ms: 120 }],
     cached: false,
     ...overrides,
   };
@@ -169,5 +172,74 @@ describe('describeCapabilities', () => {
   it('signale l’absence d’encodeur AAC', () => {
     const lines = describeCapabilities(capabilities({ encoders: new Set(['libx264']) })).join('\n');
     expect(lines).toContain('AAC absent');
+  });
+});
+
+/**
+ * Le tone mapping suit la même règle que les encodeurs : on ESSAIE, on ne lit
+ * pas une liste. La mire d'essai est déclarée HDR SANS métadonnées de
+ * mastering — c'est le cas de 161 des 164 fichiers HDR de la bibliothèque, et
+ * celui qui fait échouer tonemap_vaapi.
+ */
+describe('toneMapProbeArgs', () => {
+  const device = DEFAULT_RENDER_NODE;
+
+  it('simule une source HDR sans métadonnées de mastering', () => {
+    for (const backend of ['libplacebo', 'tonemap_opencl', 'tonemap_vaapi', 'software'] as const) {
+      const args = toneMapProbeArgs(backend, device).join(' ');
+      expect(args, backend).toContain('smpte2084');
+      expect(args, backend).toContain('bt2020');
+      // Aucun `-master_display` : c'est tout l'intérêt de l'essai.
+      expect(args, backend).not.toContain('master_display');
+    }
+  });
+
+  it('ouvre Vulkan pour libplacebo', () => {
+    const args = toneMapProbeArgs('libplacebo', device);
+    expect(args[args.indexOf('-init_hw_device') + 1]).toBe('vulkan=vk');
+    expect(args.join(' ')).toContain('libplacebo=');
+  });
+
+  it('ouvre le nœud de rendu pour tonemap_vaapi', () => {
+    const args = toneMapProbeArgs('tonemap_vaapi', device);
+    expect(args[args.indexOf('-init_hw_device') + 1]).toBe(`vaapi=va:${device}`);
+  });
+
+  it('n’ouvre aucun périphérique en logiciel', () => {
+    expect(toneMapProbeArgs('software', device)).not.toContain('-init_hw_device');
+  });
+
+  it('n’écrit nulle part', () => {
+    for (const backend of ['libplacebo', 'tonemap_opencl', 'tonemap_vaapi', 'software'] as const) {
+      expect(toneMapProbeArgs(backend, device).slice(-3)).toEqual(['-f', 'null', '-']);
+    }
+  });
+});
+
+describe('describeCapabilities — tone mapping', () => {
+  it('annonce le moteur retenu', () => {
+    expect(describeCapabilities(capabilities()).join('\n')).toContain('Tone mapping HDR retenu : libplacebo');
+  });
+
+  it('avertit quand seul le logiciel reste', () => {
+    // Mesuré à ×0,47 : sous le temps réel, une session sature la machine.
+    const lines = describeCapabilities(
+      capabilities({
+        toneMap: 'software',
+        toneMapProbes: [
+          { backend: 'libplacebo', ok: false, error: 'no vulkan', ms: 30 },
+          { backend: 'software', ok: true, error: null, ms: 90 },
+        ],
+      }),
+    ).join('\n');
+    expect(lines).toContain('LOGICIEL');
+    expect(lines).toContain('sous le temps réel');
+    expect(lines).toContain('libplacebo — no vulkan');
+  });
+
+  it('alerte quand aucun moteur ne marche', () => {
+    const lines = describeCapabilities(capabilities({ toneMap: null, toneMapProbes: [] })).join('\n');
+    expect(lines).toContain('AUCUN moteur de tone mapping');
+    expect(lines).toContain('délavés');
   });
 });

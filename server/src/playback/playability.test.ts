@@ -83,16 +83,44 @@ describe('decidePlayback — remux', () => {
   });
 });
 
-describe('decidePlayback — refus', () => {
-  it('nomme le codec vidéo en clair', () => {
+/**
+ * 993 fichiers sur 2796 : la vidéo doit être réencodée. C'est le mode le plus
+ * coûteux, et il ne doit JAMAIS attraper un fichier déjà en H.264.
+ */
+describe('decidePlayback — transcodage', () => {
+  it('réencode le HEVC', () => {
     const decision = decidePlayback(
       file({ extension: '.mkv', container: 'matroska', videoCodec: 'hevc' }),
       URLS,
       WITH_FFMPEG,
     );
-    expect(decision.mode).toBe('unsupported');
-    expect(decision.source).toBeNull();
+    expect(decision.mode).toBe('transcode');
+    expect(decision.source).toEqual({ url: URLS.hls, type: 'hls' });
     expect(decision.reason).toContain('HEVC (H.265)');
+    expect(decision.reason).toContain('réencodée');
+  });
+
+  it('réencode aussi le MPEG-4 et l’AV1', () => {
+    for (const codec of ['mpeg4', 'av1']) {
+      const decision = decidePlayback(
+        file({ extension: '.mkv', container: 'matroska', videoCodec: codec }),
+        URLS,
+        WITH_FFMPEG,
+      );
+      expect(decision.mode, codec).toBe('transcode');
+    }
+  });
+
+  it('ne réencode JAMAIS une vidéo déjà en H.264', () => {
+    // C'est la distinction qui vaut des minutes par fichier : ces cas doivent
+    // rester en remux, où la vidéo est copiée.
+    for (const overrides of [
+      { extension: '.mkv', container: 'matroska' },
+      { audioCodec: 'eac3' },
+      { container: 'mpegts' },
+    ]) {
+      expect(decidePlayback(file(overrides), URLS, WITH_FFMPEG).mode).toBe('remux');
+    }
   });
 
   it('énumère plusieurs causes dans une seule phrase', () => {
@@ -105,9 +133,24 @@ describe('decidePlayback — refus', () => {
     expect(decision.reason).toContain(' et ');
   });
 
-  it('garde un codec inconnu tel quel plutôt que de l’effacer', () => {
+  it('refuse honnêtement quand ffmpeg est absent', () => {
+    const decision = decidePlayback(
+      file({ extension: '.mkv', container: 'matroska', videoCodec: 'hevc' }),
+      URLS,
+      { remuxAvailable: false },
+    );
+    expect(decision.mode).toBe('unsupported');
+    expect(decision.reason).toContain('FFMPEG_PATH');
+  });
+});
+
+describe('decidePlayback — refus', () => {
+  it('refuse un codec hors de la liste, en le nommant', () => {
+    // La liste des codecs réencodables est FERMÉE : lancer un transcodage sur
+    // un codec inconnu échouerait après trente secondes d'attente.
     const decision = decidePlayback(file({ videoCodec: 'prores' }), URLS, WITH_FFMPEG);
     expect(decision.mode).toBe('unsupported');
+    expect(decision.source).toBeNull();
     expect(decision.reason).toContain('prores');
   });
 });

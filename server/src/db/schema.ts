@@ -29,11 +29,13 @@
  * 6 — personnes et crédits : réalisation, création, distribution.
  * 7 — lecture : chemin brut des sous-titres, pour l'accès disque.
  * 8 — index des images clés, pour un découpage HLS fidèle à la source.
+ * 9 — profil Dolby Vision, qui décide si le tone mapping est possible.
+ * 10 — reprise de lecture : durée totale et dernier fichier employé.
  *
  * Les évolutions sont additives et toutes les instructions sont en
  * `IF NOT EXISTS` : rouvrir une base v1 la complète sans rien perdre.
  */
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA_SQL = `
 -- ---------------------------------------------------------------------------
@@ -517,5 +519,43 @@ export const COLUMN_ADDITIONS: { table: string; column: string; definition: stri
    * elle reste à NULL entre-temps, et la lecture retombe alors sur `path`.
    */
   { table: 'subtitle', column: 'raw_path', definition: 'TEXT' },
+
+  /*
+   * --- Phase 9 : Dolby Vision ----------------------------------------------
+   *
+   * Le PROFIL décide de tout. Un profil 8 porte une couche de base
+   * rétro-compatible qu'on traite comme du HDR10 ordinaire ; un profil 5 n'a
+   * aucun repli, et le traiter de la même façon produit une image verdâtre.
+   *
+   * Sondé à la demande, une seule fois par fichier : sur cette bibliothèque,
+   * 93 des 94 fichiers Dolby Vision sont en profil 8 compatibilité 1, et un
+   * seul en profil 5.
+   *
+   * NULL signifie « pas encore sondé », 0 « sondé, aucune configuration
+   * Dolby Vision trouvée » — la distinction évite de resonder indéfiniment un
+   * fichier qui n'a rien à déclarer.
+   */
+  { table: 'media_file', column: 'dv_profile', definition: 'INTEGER' },
+  { table: 'media_file', column: 'dv_bl_compat', definition: 'INTEGER' },
+
+  /*
+   * --- Phase 10 : reprise de lecture ---------------------------------------
+   *
+   * La durée TOTALE au moment de l'enregistrement, telle que le lecteur la
+   * connaît. Sans elle, impossible de calculer un pourcentage : la durée d'une
+   * œuvre n'est pas celle d'un fichier — un film en deux versions en a deux, et
+   * la progression est portée par l'œuvre.
+   *
+   * Null quand le lecteur ne la connaissait pas encore. Les seuils de 5 % et
+   * 90 % ne s'appliquent alors pas, et l'entrée n'apparaît pas dans la rangée.
+   */
+  { table: 'playback_progress', column: 'duration_seconds', definition: 'REAL' },
+
+  /*
+   * Dernier fichier employé. Sert à rouvrir la lecture au bon endroit quand
+   * une œuvre a plusieurs fichiers — mais la POSITION, elle, reste celle de
+   * l'œuvre : reprendre une version reprend l'autre au même instant.
+   */
+  { table: 'playback_progress', column: 'media_file_id', definition: 'INTEGER' },
 ];
 

@@ -14,6 +14,7 @@ import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
 
 import { registerHlsRoutes } from './api/hls.js';
+import { registerProgressRoutes } from './api/progress.js';
 import { registerReviewRoutes } from './api/review.js';
 import { registerRoutes } from './api/routes.js';
 import { registerStreamRoutes } from './api/stream.js';
@@ -62,7 +63,11 @@ async function main(): Promise<void> {
   let hardwareReport: FfmpegCapabilities | null = null;
 
   registerRoutes(app, db);
-  registerStreamRoutes(app, db, () => sessionManager !== null);
+  registerProgressRoutes(app, db);
+  registerStreamRoutes(app, db, () => ({
+    available: sessionManager !== null,
+    ffmpegBinary: hardwareReport?.binary ?? 'ffmpeg',
+  }));
   registerHlsRoutes(app, db, () => sessionManager);
 
   /*
@@ -76,6 +81,8 @@ async function main(): Promise<void> {
       ffmpeg: hardwareReport.version,
       device: hardwareReport.device,
       hardware: hardwareReport.hardware,
+      toneMap: hardwareReport.toneMap,
+      toneMapProbes: hardwareReport.toneMapProbes,
       cached: hardwareReport.cached,
       probes: hardwareReport.probes,
       summary: describeCapabilities(hardwareReport),
@@ -144,6 +151,11 @@ async function main(): Promise<void> {
       workDir: transcodePath,
       maxSessions: config.transcode.maxSessions,
       idleSeconds: config.transcode.idleSeconds,
+      // L'accélération vient de l'essai réel mené juste au-dessus, jamais
+      // d'une liste d'encodeurs.
+      hardware: capabilities.hardware === 'vaapi' ? 'vaapi' : null,
+      device: capabilities.device ?? '/dev/dri/renderD128',
+      toneMap: capabilities.toneMap,
       onLog: (message, details) => app.log.info(details ?? {}, message),
     });
     await sessionManager.start();

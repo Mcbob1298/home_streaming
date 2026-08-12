@@ -77,6 +77,9 @@ FROM node:22-bookworm-slim AS ffmpeg-base
 # `vainfo` n'est pas nécessaire au fonctionnement, mais c'est le seul moyen de
 # diagnostiquer une accélération qui refuse de démarrer. Deux mégaoctets bien
 # placés.
+#
+# Le ffmpeg de Debian est conservé : c'est le repli, atteignable en pointant
+# FFMPEG_PATH sur /usr/bin/ffmpeg sans rien reconstruire.
 RUN sed -i 's/^Components: main$/Components: main contrib non-free non-free-firmware/' \
       /etc/apt/sources.list.d/debian.sources \
  && apt-get update \
@@ -87,6 +90,29 @@ RUN sed -i 's/^Components: main$/Components: main contrib non-free non-free-firm
       libva2 \
       vainfo \
       tini \
+      curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# ------------------------------------------------------------------------------
+# jellyfin-ffmpeg7 — le tone mapping HDR de cette bibliothèque en dépend
+#
+# `tonemap_vaapi` du ffmpeg 5.1 de Debian exige les métadonnées de mastering
+# HDR10 et refuse de démarrer sans elles. Sondage de la bibliothèque : 161 des
+# 164 fichiers HDR n'en portent PAS. Le filtre n'a aucune option pour les
+# suppléer, OpenCL n'a pas de runtime sur la machine, et le tone mapping
+# logiciel tourne à ×0,47 — sous le temps réel, avec 84 % de la machine.
+#
+# `libplacebo`, embarqué ici, ne dépend pas de ces métadonnées. Le paquet
+# apporte au passage oneVPL, qui pourrait rendre QuickSync utilisable sur
+# l'Alder Lake — la détection par essai réel le retiendra d'elle-même si c'est
+# le cas, rien n'est décidé ici.
+# ------------------------------------------------------------------------------
+ARG JELLYFIN_FFMPEG_VERSION=7.1.4-3
+RUN curl -fsSL -o /tmp/jellyfin-ffmpeg.deb \
+      "https://repo.jellyfin.org/files/ffmpeg/debian/latest-7.x/amd64/jellyfin-ffmpeg7_${JELLYFIN_FFMPEG_VERSION}-bookworm_amd64.deb" \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends /tmp/jellyfin-ffmpeg.deb \
+ && rm -f /tmp/jellyfin-ffmpeg.deb \
  && rm -rf /var/lib/apt/lists/*
 
 # Sans cette variable, libva choisit i965, qui ne connaît pas Alder Lake.
@@ -94,9 +120,13 @@ ENV LIBVA_DRIVER_NAME=iHD
 
 WORKDIR /app
 
+# FFMPEG_PATH désigne le binaire à utiliser. C'est AUSSI le levier de repli :
+# le passer à /usr/bin/ffmpeg dans le compose ramène au ffmpeg 5.1 de Debian,
+# sans reconstruction. `ffprobe` est déduit du même dossier, jamais du PATH.
 ENV HOST=0.0.0.0 \
     PORT=3000 \
-    HOME_STREAMING_CONFIG=/app/config.production.json
+    HOME_STREAMING_CONFIG=/app/config.production.json \
+    FFMPEG_PATH=/usr/lib/jellyfin-ffmpeg/ffmpeg
 
 EXPOSE 3000
 

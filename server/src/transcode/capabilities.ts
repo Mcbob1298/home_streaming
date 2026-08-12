@@ -43,6 +43,24 @@ export interface EncoderProbe {
   ms: number;
 }
 
+/**
+ * Moteur de tone mapping HDR vers SDR.
+ *
+ * `libplacebo` passe par Vulkan et ne dépend PAS des métadonnées de mastering.
+ * `tonemap_vaapi` est le plus efficace mais les exige : sondage de cette
+ * bibliothèque, 161 des 164 fichiers HDR ne les portent pas, et le filtre
+ * refuse alors de démarrer. Il est donc classé derrière malgré son coût moindre.
+ * `software` est un dernier recours mesuré à ×0,47 — sous le temps réel.
+ */
+export type ToneMapBackend = 'libplacebo' | 'tonemap_opencl' | 'tonemap_vaapi' | 'software';
+
+export interface ToneMapProbe {
+  backend: ToneMapBackend;
+  ok: boolean;
+  error: string | null;
+  ms: number;
+}
+
 export interface FfmpegCapabilities {
   binary: string;
   version: string;
@@ -54,6 +72,9 @@ export interface FfmpegCapabilities {
   device: string | null;
   /** Chaque candidat, dans l'ordre où il a été essayé. */
   probes: EncoderProbe[];
+  /** Moteur de tone mapping RETENU, après essai réel. */
+  toneMap: ToneMapBackend | null;
+  toneMapProbes: ToneMapProbe[];
   /** Vrai quand la décision vient du cache plutôt que d'essais refaits. */
   cached: boolean;
 }
@@ -134,6 +155,91 @@ export function probeArgs(name: HardwareAcceleration | 'software', device: strin
 }
 
 /**
+ * Arguments d'essai d'un moteur de tone mapping.
+ *
+ * Chaque essai convertit une mire en simulant une source HDR : primaires
+ * BT.2020 et courbe PQ, sans AUCUNE métadonnée de mastering. C'est exactement
+ * le cas qui fait échouer `tonemap_vaapi` sur 161 fichiers — l'essai doit donc
+ * le reproduire, sinon il validerait un moteur qui échouera en production.
+ */
+export function toneMapProbeArgs(backend: ToneMapBackend, device: string): string[] {
+  const common = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
+  // Une mire déclarée HDR, sans métadonnées de mastering.
+  const source = [
+    '-f',
+    'lavfi',
+    '-i',
+    `${TEST_SOURCE},format=yuv420p10,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc`,
+  ];
+  const sink = ['-f', 'null', '-'];
+
+  switch (backend) {
+    case 'libplacebo':
+      /*
+       * libplacebo travaille sur des surfaces Vulkan. L'essai monte l'image sur
+       * le GPU, la convertit, et la redescend : si l'un des trois échoue, le
+       * moteur n'est pas utilisable.
+       */
+      return [
+        ...common,
+        '-init_hw_device',
+        'vulkan=vk',
+        '-filter_hw_device',
+        'vk',
+        ...source,
+        '-vf',
+        'hwupload,libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=nv12,hwdownload,format=nv12',
+        ...sink,
+      ];
+
+    case 'tonemap_opencl':
+      return [
+        ...common,
+        '-init_hw_device',
+        `opencl=ocl`,
+        '-filter_hw_device',
+        'ocl',
+        ...source,
+        '-vf',
+        'hwupload,tonemap_opencl=tonemap=hable:format=nv12,hwdownload,format=nv12',
+        ...sink,
+      ];
+
+    case 'tonemap_vaapi':
+      return [
+        ...common,
+        '-init_hw_device',
+        `vaapi=va:${device}`,
+        '-filter_hw_device',
+        'va',
+        ...source,
+        '-vf',
+        'hwupload,tonemap_vaapi=format=nv12:matrix=bt709:primaries=bt709:transfer=bt709',
+        ...sink,
+      ];
+
+    case 'software':
+      return [
+        ...common,
+        ...source,
+        '-vf',
+        'zscale=transfer=linear:npl=100,tonemap=hable:desat=0,zscale=primaries=bt709:transfer=bt709:matrix=bt709,format=yuv420p',
+        ...sink,
+      ];
+  }
+}
+
+/**
+ * Ordre d'essai des moteurs de tone mapping.
+ *
+ * `tonemap_vaapi` serait le moins coûteux — 4 % mesurés contre le témoin — mais
+ * il exige les métadonnées de mastering que 98 % des fichiers HDR de cette
+ * bibliothèque ne portent pas. Il passe donc APRÈS les moteurs qui n'en
+ * dépendent pas. Un essai qui échoue le déclasse de toute façon.
+ */
+const TONE_MAP_ORDER: ToneMapBackend[] = ['libplacebo', 'tonemap_opencl', 'tonemap_vaapi', 'software'];
+
+/**
  * Extrait les noms d'encodeurs de la sortie de `ffmpeg -encoders`.
  *
  * Six colonnes de drapeaux, un espace, le nom :
@@ -201,6 +307,29 @@ async function probe(
   }
 }
 
+/** Essaie un moteur de tone mapping. Ne lève jamais : l'échec EST le résultat. */
+async function probeToneMap(
+  binary: string,
+  backend: ToneMapBackend,
+  device: string,
+): Promise<ToneMapProbe> {
+  const startedAt = Date.now();
+  try {
+    await execFileAsync(binary, toneMapProbeArgs(backend, device), {
+      timeout: PROBE_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    return { backend, ok: true, error: null, ms: Date.now() - startedAt };
+  } catch (error) {
+    const failure = error as { stderr?: string; killed?: boolean; message?: string };
+    const reason =
+      failure.killed === true
+        ? `aucune réponse en ${PROBE_TIMEOUT_MS / 1000} s`
+        : summarizeFailure(failure.stderr ?? failure.message ?? '');
+    return { backend, ok: false, error: reason, ms: Date.now() - startedAt };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Cache
 // ---------------------------------------------------------------------------
@@ -210,6 +339,8 @@ interface CacheFile {
   device: string | null;
   hardware: HardwareAcceleration | null;
   probes: EncoderProbe[];
+  toneMap: ToneMapBackend | null;
+  toneMapProbes: ToneMapProbe[];
   decidedAt: string;
 }
 
@@ -286,7 +417,14 @@ export async function detectCapabilities(options: DetectOptions = {}): Promise<F
   if (options.refresh !== true && options.dataDir !== undefined) {
     const cached = readCache(options.dataDir, version, device);
     if (cached !== null) {
-      return { ...base, hardware: cached.hardware, probes: cached.probes, cached: true };
+      return {
+        ...base,
+        hardware: cached.hardware,
+        probes: cached.probes,
+        toneMap: cached.toneMap ?? null,
+        toneMapProbes: cached.toneMapProbes ?? [],
+        cached: true,
+      };
     }
   }
 
@@ -330,17 +468,37 @@ export async function detectCapabilities(options: DetectOptions = {}): Promise<F
     probes.push(await probe(binary, 'software', 'libx264', device ?? DEFAULT_RENDER_NODE));
   }
 
+  /*
+   * Tone mapping : meme principe, meme rigueur. La mire d'essai est declaree
+   * HDR SANS metadonnees de mastering, ce qui reproduit le cas de 161 des 164
+   * fichiers HDR de la bibliotheque.
+   */
+  const toneMapProbes: ToneMapProbe[] = [];
+  let toneMap: ToneMapBackend | null = null;
+
+  for (const backend of TONE_MAP_ORDER) {
+    if ((backend === 'tonemap_vaapi' || backend === 'tonemap_opencl') && device === null) continue;
+    const result = await probeToneMap(binary, backend, device ?? DEFAULT_RENDER_NODE);
+    toneMapProbes.push(result);
+    if (result.ok) {
+      toneMap = backend;
+      break;
+    }
+  }
+
   if (options.dataDir !== undefined) {
     writeCache(options.dataDir, {
       ffmpegVersion: version,
       device,
       hardware,
       probes,
+      toneMap,
+      toneMapProbes,
       decidedAt: new Date().toISOString(),
     });
   }
 
-  return { ...base, hardware, probes, cached: false };
+  return { ...base, hardware, probes, toneMap, toneMapProbes, cached: false };
 }
 
 /**
@@ -396,6 +554,32 @@ export function describeCapabilities(capabilities: FfmpegCapabilities): string[]
         'figure(nt) dans « ffmpeg -encoders » mais échoue(nt) à l’initialisation. ' +
         'La liste dit ce qui est compilé, pas ce qui fonctionne.',
     );
+  }
+
+  // --- Tone mapping --------------------------------------------------------
+  if (capabilities.toneMap === null) {
+    lines.push(
+      'AUCUN moteur de tone mapping utilisable : les 164 fichiers HDR sortiront ' +
+        'délavés et désaturés sur un écran SDR.',
+    );
+  } else {
+    const kept = capabilities.toneMapProbes.find((entry) => entry.backend === capabilities.toneMap);
+    lines.push(
+      `Tone mapping HDR retenu : ${capabilities.toneMap}` +
+        (kept !== undefined && !capabilities.cached ? ` (essai en ${kept.ms} ms)` : ''),
+    );
+    if (capabilities.toneMap === 'software') {
+      lines.push(
+        'ATTENTION : tone mapping LOGICIEL — mesuré à ×0,47, sous le temps réel, ' +
+          'et une seule session sature la machine.',
+      );
+    }
+  }
+
+  const toneRejected = capabilities.toneMapProbes.filter((entry) => !entry.ok);
+  if (toneRejected.length > 0) {
+    lines.push('Moteurs de tone mapping écartés :');
+    for (const entry of toneRejected) lines.push(`  ${entry.backend} — ${entry.error ?? 'échec'}`);
   }
 
   if (!capabilities.encoders.has('aac')) {

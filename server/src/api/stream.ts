@@ -20,7 +20,11 @@ import { readFile } from 'node:fs/promises';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { Db } from '../db/index.js';
-import { decidePlayback, mimeTypeFor, type PlaybackDecision } from '../playback/playability.js';
+import { mimeTypeFor, type PlaybackDecision } from '../playback/playability.js';
+import { findMedia as findResolvable, resolveDecision } from '../playback/resolve.js';
+import { episodeLabel } from '../progress/rules.js';
+import { progressOf } from '../progress/store.js';
+import { currentUserId } from '../progress/user.js';
 import { hlsUrlOf } from './hls.js';
 import { contentRange, etagFor, matchesEtag, parseRange, unsatisfiableRange } from '../playback/ranges.js';
 import { isConvertible, subtitleLabel, toVtt } from '../playback/vtt.js';
@@ -80,12 +84,6 @@ interface MediaContext {
   backdropPath: string | null;
   backdropSrcSet: string | null;
   durationSeconds: number | null;
-}
-
-/** « S11:E8 Le goût du risque », comme sur Disney+. */
-function episodeLabel(seasonNumber: number, episodeNumber: number, title: string | null): string {
-  const numbering = `S${String(seasonNumber).padStart(2, '0')}:E${episodeNumber}`;
-  return title === null || title.trim() === '' ? numbering : `${numbering} ${title}`;
 }
 
 function withBackdrop(raw: string | null): { backdropPath: string | null; backdropSrcSet: string | null } {
@@ -221,6 +219,28 @@ export interface PlayabilityResponse extends PlaybackDecision {
   media: MediaContext | null;
   next: { mediaFileId: number; label: string } | null;
   subtitles: SubtitleTrack[];
+  /** Position de reprise, en secondes. Zéro si l'œuvre n'a jamais été commencée. */
+  resumeSeconds: number;
+}
+
+/**
+ * Où reprendre ce fichier.
+ *
+ * La position voyage AVEC la décision de lecture, dans la même réponse : si le
+ * lecteur devait la demander à part, il démarrerait à zéro le temps du second
+ * aller-retour, puis sauterait sous les yeux du spectateur.
+ */
+function resumeSecondsOf(db: Db, file: MediaFileRow, userId: number): number {
+  const work =
+    file.movieId !== null
+      ? ({ mediaType: 'movie', mediaId: file.movieId } as const)
+      : file.episodeId !== null
+        ? ({ mediaType: 'episode', mediaId: file.episodeId } as const)
+        : null;
+  if (work === null) return 0;
+
+  const stored = progressOf(db, userId, work.mediaType, work.mediaId);
+  return stored === null || stored.watched ? 0 : stored.positionSeconds;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,11 +252,15 @@ export interface PlayabilityResponse extends PlaybackDecision {
  * un booléen : la détection est asynchrone, et les routes sont enregistrées
  * avant qu'elle ne se termine.
  */
-export function registerStreamRoutes(app: FastifyInstance, db: Db, remuxAvailable: () => boolean): void {
+export function registerStreamRoutes(
+  app: FastifyInstance,
+  db: Db,
+  transcoding: () => { available: boolean; ffmpegBinary: string },
+): void {
   // -------------------------------------------------------------------------
   // GET /api/stream/:id/playability — la décision, et de quoi habiller le lecteur
   // -------------------------------------------------------------------------
-  app.get('/api/stream/:id/playability', (request, reply) => {
+  app.get('/api/stream/:id/playability', async (request, reply) => {
     const id = readId((request.params as { id: string }).id);
     if (id === null) return reply.code(400).send({ error: 'Identifiant de fichier invalide.' });
 
@@ -245,16 +269,24 @@ export function registerStreamRoutes(app: FastifyInstance, db: Db, remuxAvailabl
       return reply.code(404).send({ error: 'Ce fichier n’est pas dans l’index, ou il n’est plus sur le disque.' });
     }
 
-    const decision = decidePlayback(
-      {
-        id: file.id,
-        extension: file.extension,
-        container: file.container,
-        videoCodec: file.videoCodec,
-        audioCodec: file.audioCodec,
-      },
+    const { available, ffmpegBinary } = transcoding();
+    const media = findResolvable(db, id);
+    if (media === undefined) {
+      return reply.code(404).send({ error: 'Ce fichier n’est pas dans l’index, ou il n’est plus sur le disque.' });
+    }
+
+    /*
+     * La même résolution que les routes HLS : deux verdicts divergents
+     * donneraient un lecteur qui reçoit « transcode » et un manifeste vide.
+     * Le plan n'est PAS calculé ici — énumérer les images clés d'un film de
+     * deux heures pour afficher une fiche coûterait plusieurs secondes.
+     */
+    const { decision } = await resolveDecision(
+      db,
+      ffmpegBinary,
+      media,
       { file: streamUrlOf(file.id), hls: hlsUrlOf(file.id) },
-      { remuxAvailable: remuxAvailable() },
+      { transcodeAvailable: available },
     );
 
     const response: PlayabilityResponse = {
@@ -262,6 +294,7 @@ export function registerStreamRoutes(app: FastifyInstance, db: Db, remuxAvailabl
       media: contextOf(db, file),
       next: nextEpisodeOf(db, file),
       subtitles: subtitlesOf(db, file.id),
+      resumeSeconds: resumeSecondsOf(db, file, currentUserId(db, request)),
     };
 
     // La décision dépend de l'état de la base, qui peut changer à la passe

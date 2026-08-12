@@ -7,7 +7,7 @@ import {
   DetailBackdrop,
   ICONS,
   MetaLine,
-  PlayButton,
+  PlayButtons,
   RoundButton,
   Synopsis,
   Tabs,
@@ -25,12 +25,35 @@ export function MoviePage() {
 
   const movie = useQuery({ queryKey: ['movie', id], queryFn: () => api.movie(id) });
 
+  /*
+   * La progression est une donnée d'utilisateur, pas de bibliothèque : elle a
+   * son propre cache, court, pour refléter ce qu'on vient de regarder. La fiche
+   * s'affiche sans l'attendre — le bouton dit « Lire » puis « Reprendre ».
+   */
+  const progress = useQuery({
+    queryKey: ['progress', 'movie', id],
+    queryFn: () => api.progressOf('movie', id),
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+
   if (movie.isPending) return <Loading />;
   if (movie.error !== null) return <ErrorMessage error={movie.error} />;
 
   const data = movie.data;
   const genreNames = data.genres.map((genre) => genre.name);
   const definition = data.fileSummary.resolutions[0];
+
+  /*
+   * Le fichier à ouvrir : celui qu'on écoutait s'il est toujours là, sinon le
+   * premier. Deux versions d'un même film — cinéma et longue — ne doivent pas
+   * se substituer l'une à l'autre au moment de reprendre, et un fichier disparu
+   * du disque ne doit pas rendre le bouton inopérant.
+   */
+  const stored = progress.data?.mediaFileId ?? null;
+  const mediaFileId =
+    data.files.find((file) => file.id === stored)?.id ?? data.files[0]?.id ?? null;
+  const resumeSeconds = progress.data?.watched === true ? 0 : (progress.data?.positionSeconds ?? 0);
 
   const facts: Fact[] = [
     { label: 'Durée', value: formatMinutes(data.runtime) },
@@ -78,7 +101,7 @@ export function MoviePage() {
           {shortSynopsis(data.overview) !== null && <Synopsis text={shortSynopsis(data.overview) as string} />}
 
           <div className="mt-[30px] flex items-center gap-4">
-            <PlayButton mediaFileId={data.files[0]?.id ?? null} />
+            <PlayButtons mediaFileId={mediaFileId} resumeSeconds={resumeSeconds} />
             <div className="flex gap-3">
               <RoundButton label="Ajouter à ma liste">{ICONS.plus}</RoundButton>
               <RoundButton label="Partager">{ICONS.share}</RoundButton>

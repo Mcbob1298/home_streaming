@@ -42,6 +42,15 @@ services:
       HOME_STREAMING_CONFIG: /app/config.production.json
       TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
 
+      # Le surveillant de fichiers doit SCRUTER, pas écouter.
+      #
+      # Les événements inotify d'un montage bind ne traversent pas toujours la
+      # frontière du conteneur : constaté ici, une modification de la source
+      # laissait le serveur servir l'ancien code sans le moindre signe. La
+      # scrutation coûte quelques cycles et ne rate rien.
+      CHOKIDAR_USEPOLLING: "1"
+      CHOKIDAR_INTERVAL: "1000"
+
     ports:
       - "3001:3000"
 
