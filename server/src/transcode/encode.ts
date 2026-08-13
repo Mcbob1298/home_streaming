@@ -21,10 +21,77 @@
  *    en réduisant du 5.1 en stéréo. Une matrice explicite les remonte.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-import type { ToneMapBackend } from './capabilities.js';
-import { INIT_FILE_NAME, SEGMENT_PATTERN } from './segments.js';
+import { audioMapArgs, channelsOf, downmixFilter, type AudioChoice } from './args.js';
+import {
+  LIBPLACEBO_FILTER,
+  TONE_MAP_OPENCL_FILTER,
+  TONE_MAP_VAAPI_FILTER,
+  type ToneMapBackend,
+} from './capabilities.js';
+import { AUDIO_SAMPLE_RATE, INIT_FILE_NAME, SEGMENT_PATTERN } from './segments.js';
+
+/*
+ * Le downmix vit dans `args.ts` : il s'applique aux DEUX chemins, remux et
+ * transcodage, et n'appartient donc à aucun des deux. La réexportation garde
+ * un point d'accès unique côté encodage.
+ */
+export { downmixFilter };
 
 export type HdrKind = 'HDR10' | 'HDR10+' | 'HLG' | 'Dolby Vision' | null;
+
+/**
+ * Les accélérations que CE MODULE sait réellement piloter.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LE TYPE EST LA GARANTIE, PAS LE COMMENTAIRE.
+ *
+ * Le type valait `'vaapi' | null`, et `index.ts` y ramenait tout le reste par
+ * un `=== 'vaapi' ? 'vaapi' : null`. Le jour où ffmpeg 7 a fait marcher QSV, la
+ * détection l'a retenu, ce ternaire l'a converti en `null`, et le serveur s'est
+ * mis à transcoder en LOGICIEL — à x0,47, sous le temps réel — sans rien dire.
+ *
+ * `supportedBackend()` remplace ce ternaire : elle rend le moteur quand il est
+ * pris en charge, et null accompagné d'une RAISON sinon. Ajouter un moteur à la
+ * détection sans l'implémenter ici produit désormais un message explicite au
+ * démarrage, jamais un repli muet.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+export type HardwareBackend = 'vaapi' | 'qsv' | null;
+
+/** Ce que la détection peut rendre, y compris ce qu'on ne sait pas piloter. */
+export type DetectedAcceleration = 'qsv' | 'vaapi' | 'nvenc' | 'amf' | 'videotoolbox' | null;
+
+export interface BackendChoice {
+  backend: HardwareBackend;
+  /** Renseignée quand un moteur a été détecté mais n'est pas pris en charge. */
+  unsupported: string | null;
+}
+
+export function supportedBackend(detected: DetectedAcceleration): BackendChoice {
+  switch (detected) {
+    case 'vaapi':
+    case 'qsv':
+      return { backend: detected, unsupported: null };
+    case null:
+      return { backend: null, unsupported: null };
+    case 'nvenc':
+    case 'amf':
+    case 'videotoolbox':
+      return {
+        backend: null,
+        unsupported:
+          `L'accélération « ${detected} » a passé l'essai mais n'est pas implémentée dans ` +
+          'encode.ts : le transcodage se fera en LOGICIEL, beaucoup plus lentement. ' +
+          'Ajouter sa chaîne de filtres, ou la retirer des candidats de capabilities.ts.',
+      };
+    default: {
+      // Exhaustivité vérifiée à la compilation : un moteur ajouté au type sans
+      // être traité ici fait échouer le build, pas la production.
+      const jamais: never = detected;
+      return { backend: null, unsupported: `Accélération inconnue : ${String(jamais)}` };
+    }
+  }
+}
 
 export interface TranscodeRunOptions {
   input: string;
@@ -33,8 +100,8 @@ export interface TranscodeRunOptions {
   segmentDuration: number;
   endTime: number | null;
   outputDir: string;
-  /** Piste audio à retenir. Null pour la première. */
-  audioStreamIndex: number | null;
+  /** Piste audio produite avec la vidéo, ou aucune quand elle est rendue à part. */
+  audio: AudioChoice;
 
   /** Dimensions de la source, pour ne jamais agrandir et calculer la sortie. */
   sourceWidth: number | null;
@@ -43,12 +110,10 @@ export interface TranscodeRunOptions {
   frameRate: number | null;
   hdr: HdrKind;
   /** Accélération retenue au démarrage, après essai réel. */
-  hardware: 'vaapi' | null;
+  hardware: HardwareBackend;
   device: string;
   /** Moteur de tone mapping retenu au démarrage, après essai réel. */
   toneMap: ToneMapBackend | null;
-  /** Nombre de canaux de la source, pour choisir la matrice de downmix. */
-  audioChannels: number | null;
 }
 
 /** Hauteur maximale produite. Au-delà, le NAS travaille pour rien. */
@@ -190,14 +255,12 @@ export function vaapiFilterChain(options: {
      */
     if (options.toneMap === 'libplacebo') {
       filters.push('hwmap=derive_device=vulkan');
-      filters.push(
-        'libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=nv12',
-      );
+      filters.push(LIBPLACEBO_FILTER);
       filters.push('hwmap=derive_device=vaapi:reverse=1');
       return filters.join(',');
     }
 
-    filters.push('tonemap_vaapi=format=nv12:matrix=bt709:primaries=bt709:transfer=bt709');
+    filters.push(TONE_MAP_VAAPI_FILTER);
     return filters.join(',');
   }
 
@@ -213,6 +276,34 @@ export function vaapiFilterChain(options: {
   }
 
   return filters.join(',');
+}
+
+/**
+ * Chaîne de filtres QuickSync.
+ *
+ * `vpp_qsv` fait tout d'un coup — dimension, format, et tone mapping par
+ * `tonemap=1` — là où VAAPI demande deux filtres. Il n'y a donc rien à ordonner
+ * ni aucun périphérique à dériver : QSV n'a pas l'équivalent du détour par
+ * Vulkan qui met libplacebo en échec.
+ *
+ * Mesuré 40 à 50 % plus lent que VAAPI sur le HDR de cette machine, d'où sa
+ * seconde place. Il reste le bon choix là où VAAPI ne s'initialise pas.
+ */
+export function qsvFilterChain(options: {
+  targetHeight: number;
+  hdr: HdrKind;
+  sourceWidth: number | null;
+  sourceHeight: number | null;
+}): string {
+  const size = outputSize(options.sourceWidth, options.sourceHeight, options.targetHeight);
+  const resizing = size !== null && shouldResize(options.sourceHeight, options.targetHeight);
+
+  const parts: string[] = [];
+  if (resizing && size !== null) parts.push(`w=${size.width}`, `h=${size.height}`);
+  if (needsToneMapping(options.hdr)) parts.push('tonemap=1');
+  parts.push('format=nv12');
+
+  return `vpp_qsv=${parts.join(':')}`;
 }
 
 /**
@@ -252,38 +343,6 @@ export function softwareFilterChain(options: {
 }
 
 /**
- * Matrice de downmix 5.1 et 7.1 vers stéréo.
- *
- * PIÈGE 3 : le downmix par défaut de ffmpeg applique des coefficients qui
- * enterrent le canal central — donc les dialogues — sous les canaux musique et
- * effets. La voix remonte ici à 0,8 quand les surrounds descendent à 0,5.
- *
- * Les coefficients sont normalisés pour éviter la saturation : leur somme par
- * canal de sortie reste sous 1 après le gain de normalisation de ffmpeg.
- */
-export function downmixFilter(channels: number | null): string {
-  // Mono et stéréo n'ont rien à mélanger.
-  if (channels === null || channels <= 2) return 'aresample=async=1:first_pts=0';
-
-  if (channels >= 7) {
-    return (
-      'pan=stereo|' +
-      'FL=0.5*FL+0.8*FC+0.3*LFE+0.4*BL+0.4*SL|' +
-      'FR=0.5*FR+0.8*FC+0.3*LFE+0.4*BR+0.4*SR,' +
-      'aresample=async=1:first_pts=0'
-    );
-  }
-
-  // 5.1 : le cas le plus fréquent de la bibliothèque.
-  return (
-    'pan=stereo|' +
-    'FL=0.5*FL+0.8*FC+0.3*LFE+0.5*BL|' +
-    'FR=0.5*FR+0.8*FC+0.3*LFE+0.5*BR,' +
-    'aresample=async=1:first_pts=0'
-  );
-}
-
-/**
  * Intervalle entre images clés forcées.
  *
  * La vidéo étant réencodée, on place les images clés OÙ L'ON VEUT — ce que la
@@ -315,9 +374,12 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
    * est le drapeau qui compte : sans lui les images décodées redescendent en
    * mémoire centrale, et le décodage HEVC logiciel mange à lui seul le gain.
    */
-  const hardware = options.hardware === 'vaapi';
-  if (hardware) {
+  if (options.hardware === 'vaapi') {
     args.push('-hwaccel', 'vaapi', '-hwaccel_device', options.device, '-hwaccel_output_format', 'vaapi');
+  } else if (options.hardware === 'qsv') {
+    // QSV veut un périphérique nommé, que la chaîne de filtres réutilise.
+    args.push('-init_hw_device', `qsv=hw:${options.device}`, '-filter_hw_device', 'hw');
+    args.push('-hwaccel', 'qsv', '-hwaccel_output_format', 'qsv');
   }
 
   if (options.startTime > 0) args.push('-ss', options.startTime.toFixed(3));
@@ -329,41 +391,37 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
   /*
    * SÉLECTION EXPLICITE DES FLUX.
    *
-   * Avatar contient 27 flux : 1 vidéo, 6 audio, 16 sous-titres, 2 polices
-   * TrueType attachées et 2 images de couverture. Sans cette sélection, ffmpeg
-   * essaie d'en faire quelque chose — et échoue sur les polices.
+   * Le fichier #365 contient 27 flux : 1 vidéo, 6 audio, 16 sous-titres,
+   * 2 polices TrueType attachées et 2 images de couverture. Sans cette
+   * sélection, ffmpeg essaie d'en faire quelque chose — et échoue sur les
+   * polices, tout en prenant les couvertures MJPEG pour des flux vidéo.
+   *
+   * `0:v:0` et non `0:v` : le premier flux vidéo NON-vignette, que ffmpeg
+   * choisit correctement, plutôt que tous les flux vidéo du fichier.
    */
   args.push('-map', '0:v:0');
-  args.push('-map', options.audioStreamIndex === null ? '0:a:0?' : `0:a:${options.audioStreamIndex}?`);
-  // Rien d'autre. Les pistes multiples et les sous-titres viennent au palier 3.
+  args.push(...audioMapArgs(options.audio));
   args.push('-sn', '-dn', '-map_chapters', '-1');
 
   const height = outputHeight(options.sourceHeight);
 
-  if (hardware) {
-    args.push(
-      '-vf',
-      vaapiFilterChain({
-        targetHeight: height,
-        hdr: options.hdr,
-        sourceWidth: options.sourceWidth,
-        sourceHeight: options.sourceHeight,
-        toneMap: options.toneMap,
-      }),
-    );
+  const geometry = {
+    targetHeight: height,
+    hdr: options.hdr,
+    sourceWidth: options.sourceWidth,
+    sourceHeight: options.sourceHeight,
+  };
+
+  if (options.hardware === 'vaapi') {
+    args.push('-vf', vaapiFilterChain({ ...geometry, toneMap: options.toneMap }));
     args.push('-c:v', 'h264_vaapi');
     // Profil « main » : universellement décodé, et suffisant en 8 bits.
     args.push('-profile:v', 'main');
+  } else if (options.hardware === 'qsv') {
+    args.push('-vf', qsvFilterChain(geometry));
+    args.push('-c:v', 'h264_qsv', '-profile:v', 'main');
   } else {
-    args.push(
-      '-vf',
-      softwareFilterChain({
-        targetHeight: height,
-        hdr: options.hdr,
-        sourceWidth: options.sourceWidth,
-        sourceHeight: options.sourceHeight,
-      }),
-    );
+    args.push('-vf', softwareFilterChain(geometry));
     args.push('-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'high');
     // Ceinture et bretelles : le filtre l'impose déjà, mais un profil High 10
     // produit par héritage serait invisible jusqu'à l'échec du navigateur.
@@ -376,16 +434,39 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
   args.push(...keyframeArgs(options.segmentDuration, options.frameRate));
 
   /*
-   * Les métadonnées de couleur HDR ne doivent PAS survivre au tone mapping :
-   * un flux BT.709 étiqueté smpte2084 serait réinterprété par le navigateur et
-   * l'image ressortirait délavée malgré la conversion.
+   * ───────────────────────────────────────────────────────────────────────────
+   * LES MÉTADONNÉES DE COULEUR VIENNENT DU FILTRE, PAS DE LA LIGNE DE COMMANDE.
+   *
+   * Un flux BT.709 étiqueté smpte2084 serait réinterprété par le navigateur et
+   * ressortirait délavé malgré la conversion : il faut donc que la sortie soit
+   * correctement étiquetée. Elle l'est — par le filtre de tone mapping, qui
+   * pose `matrix`, `primaries` et `transfer` sur les images qu'il produit.
+   *
+   * Les redire en options de sortie était une ceinture et bretelles que
+   * ffmpeg 5.1 tolérait. ffmpeg 7 ne la tolère plus : ne trouvant pas la
+   * conversion demandée, il insère un `auto_scale` entre le filtre et
+   * l'encodeur, et ce filtre logiciel ne sait pas traiter une surface VAAPI —
+   *
+   *   Impossible to convert between the formats supported by the filter
+   *   'Parsed_tonemap_vaapi_1' and the filter 'auto_scale_0'
+   *
+   * Résultat : aucun paquet écrit, et les 164 fichiers HDR en échec. Vérifié
+   * après retrait : `color_space=bt709, color_transfer=bt709,
+   * color_primaries=bt709, pix_fmt=yuv420p, profile=Main`.
+   *
+   * Le repli logiciel les garde : `zscale` les pose aussi, mais là un
+   * `auto_scale` inséré sait faire son travail, et la redondance ne coûte rien.
+   * ───────────────────────────────────────────────────────────────────────────
    */
-  if (needsToneMapping(options.hdr)) {
+  if (needsToneMapping(options.hdr) && options.hardware === null) {
     args.push('-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709');
   }
 
-  args.push('-c:a', 'aac', '-b:a', '192k', '-ac', '2');
-  args.push('-af', downmixFilter(options.audioChannels));
+  if (options.audio.kind !== 'none') {
+    args.push('-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', String(AUDIO_SAMPLE_RATE));
+    // La matrice suit la piste RETENUE, pas la première du fichier.
+    args.push('-af', downmixFilter(channelsOf(options.audio)));
+  }
 
   if (options.startTime > 0) args.push('-output_ts_offset', options.startTime.toFixed(3));
 

@@ -13,6 +13,7 @@
     "cleanup": "tsx src/cleanup/cli.ts",
     "playable": "tsx src/playback/cli.ts",
     "keyframes": "tsx src/transcode/cli.ts",
+    "subtitles": "tsx src/transcode/subtitleCli.ts",
     "migrate-paths": "tsx src/migrate/cli.ts",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",

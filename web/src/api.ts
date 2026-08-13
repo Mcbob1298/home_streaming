@@ -283,6 +283,34 @@ export interface PlaybackContext {
   durationSeconds: number | null;
 }
 
+/** Une piste proposée dans le menu de l'engrenage. */
+export interface TrackOption {
+  /** Index ABSOLU du flux dans le fichier. C'est l'identifiant de la piste. */
+  streamIndex: number;
+  label: string;
+  language: string | null;
+}
+
+export interface SubtitleOption extends TrackOption {
+  kind: 'forced' | 'sdh' | 'full';
+  /**
+   * Le WebVTT est-il extrait et servable ?
+   *
+   * Une extraction traverse le fichier entier — plus de cinq minutes sur un
+   * remux 4K. La lecture démarre sans attendre, et les pistes deviennent
+   * disponibles au fur et à mesure.
+   */
+  ready?: boolean;
+}
+
+/** Ce que le sélecteur affiche pendant qu'une extraction tourne. */
+export interface SubtitleReadiness {
+  tracks: (SubtitleOption & { ready: boolean })[];
+  /** Vrai tant qu'il reste des pistes à produire. */
+  preparing: boolean;
+  imageOnlySubtitles: boolean;
+}
+
 export interface Playability {
   mediaFileId: number;
   mode: PlaybackMode;
@@ -302,6 +330,22 @@ export interface Playability {
    * part, la vidéo démarrerait à zéro puis sauterait sous les yeux du spectateur.
    */
   resumeSeconds: number;
+
+  /** Pistes audio du fichier, libellées. Vide sur un fichier muet. */
+  audioTracks: TrackOption[];
+  /** Piste à ouvrir : préférence mémorisée, sinon règle automatique. */
+  defaultAudioStream: number | null;
+  /** Sous-titres embarqués exposés. Les pistes image en sont écartées. */
+  embeddedSubtitles: SubtitleOption[];
+  /** Sous-titre à activer à l'ouverture. Null pour « Désactivés ». */
+  defaultSubtitleStream: number | null;
+  /**
+   * Le fichier n'a QUE des sous-titres image.
+   *
+   * Le sélecteur le dit alors explicitement : ne rien afficher laisserait
+   * croire que le fichier n'en a aucun, ce qui est faux.
+   */
+  imageOnlySubtitles: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -458,11 +502,26 @@ export const api = {
   playability: (mediaFileId: number | string) =>
     getJson<Playability>(`/api/stream/${mediaFileId}/playability`),
 
+  /**
+   * Mémorise un choix de piste.
+   *
+   * On envoie des index de flux — ce que le lecteur connaît ; le serveur en
+   * retient la LANGUE, qui seule traverse les épisodes d'une série.
+   */
+  saveTrackChoice: (
+    mediaFileId: number,
+    choice: { audioStream: number | null; subtitleStream: number | null },
+  ) => send<null>(`/api/stream/${mediaFileId}/tracks`, 'POST', choice),
+
   // --- Reprise de lecture --------------------------------------------------
   continueWatching: () => getJson<ContinueEntry[]>('/api/progress/continue'),
 
   progressOf: (mediaType: MediaType, mediaId: number | string) =>
     getJson<ProgressSnapshot>(`/api/progress/${mediaType}/${mediaId}`),
+
+  /** État d'extraction des sous-titres embarqués, interrogé pendant la préparation. */
+  subtitleReadiness: (mediaFileId: number | string) =>
+    getJson<SubtitleReadiness>(`/api/stream/${mediaFileId}/subtitles`),
 
   /** Progression de tous les épisodes d'une série, et son point de reprise. */
   showProgress: (showId: number | string) => getJson<ShowProgress>(`/api/progress/show/${showId}`),

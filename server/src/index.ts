@@ -22,11 +22,13 @@ import { ImageDownloader } from './metadata/images.js';
 import { TmdbClient } from './metadata/tmdb.js';
 import type { EnrichContext } from './metadata/enrich.js';
 import { SessionManager } from './transcode/manager.js';
+import { SubtitleWorker, setSubtitleWorker } from './transcode/subtitleQueue.js';
 import {
   describeCapabilities,
   detectCapabilities,
   type FfmpegCapabilities,
 } from './transcode/capabilities.js';
+import { supportedBackend } from './transcode/encode.js';
 import {
   DATA_DIR,
   loadConfig,
@@ -61,13 +63,23 @@ async function main(): Promise<void> {
    */
   let sessionManager: SessionManager | null = null;
   let hardwareReport: FfmpegCapabilities | null = null;
+  let subtitleWorker: SubtitleWorker | null = null;
+
+  /*
+   * Le cache de sous-titres vit dans DATA_DIR, a cote de la base, et NON dans le
+   * repertoire de transcodage : celui-ci est efface a chaque demarrage et monte
+   * en tmpfs, alors qu une extraction coute une traversee complete du fichier.
+   */
+  const subtitleCacheDir = path.join(DATA_DIR, 'subtitles');
 
   registerRoutes(app, db);
   registerProgressRoutes(app, db);
-  registerStreamRoutes(app, db, () => ({
-    available: sessionManager !== null,
-    ffmpegBinary: hardwareReport?.binary ?? 'ffmpeg',
-  }));
+  registerStreamRoutes(
+    app,
+    db,
+    () => ({ available: sessionManager !== null, ffmpegBinary: hardwareReport?.binary ?? 'ffmpeg' }),
+    () => subtitleCacheDir,
+  );
   registerHlsRoutes(app, db, () => sessionManager);
 
   /*
@@ -144,21 +156,52 @@ async function main(): Promise<void> {
      */
     const capabilities = await detectCapabilities({ dataDir: DATA_DIR });
     hardwareReport = capabilities;
-    for (const line of describeCapabilities(capabilities)) app.log.info(line);
+
+    /*
+     * Le moteur détecté n'est pas forcément un moteur qu'on sait piloter. La
+     * différence est dite ICI, au démarrage, et non découverte par hasard en
+     * comparant des mesures.
+     */
+    const backend = supportedBackend(capabilities.hardware);
+    for (const line of describeCapabilities(capabilities, backend)) app.log.info(line);
 
     sessionManager = new SessionManager({
       ffmpegBinary: capabilities.binary,
       workDir: transcodePath,
+      /*
+       * Le cache de sous-titres vit dans DATA_DIR, à côté de la base, et NON
+       * dans le répertoire de transcodage : celui-ci est effacé à chaque
+       * démarrage et monté en tmpfs, alors qu'une extraction coûte une
+       * traversée complète du fichier source.
+       */
+      subtitleCacheDir,
       maxSessions: config.transcode.maxSessions,
       idleSeconds: config.transcode.idleSeconds,
-      // L'accélération vient de l'essai réel mené juste au-dessus, jamais
-      // d'une liste d'encodeurs.
-      hardware: capabilities.hardware === 'vaapi' ? 'vaapi' : null,
+      /*
+       * L'accélération vient de l'essai réel mené juste au-dessus, jamais d'une
+       * liste d'encodeurs — et elle passe par `supportedBackend`, qui refuse de
+       * convertir en silence un moteur détecté mais non implémenté. Le ternaire
+       * qu'elle remplace faisait transcoder en logiciel à x0,47 sans un mot.
+       */
+      hardware: backend.backend,
       device: capabilities.device ?? '/dev/dri/renderD128',
       toneMap: capabilities.toneMap,
       onLog: (message, details) => app.log.info(details ?? {}, message),
     });
     await sessionManager.start();
+
+    /*
+     * Le travailleur de sous-titres draine la file persistee sans jamais
+     * bloquer une requete. Il reprend au demarrage ce qu une interruption a
+     * laisse en plan, et « npm run subtitles » alimente la meme file.
+     */
+    subtitleWorker = new SubtitleWorker(db, {
+      ffmpegBinary: capabilities.binary,
+      cacheDir: subtitleCacheDir,
+      onLog: (message, details) => app.log.info(details ?? {}, message),
+    });
+    setSubtitleWorker(subtitleWorker);
+    subtitleWorker.start();
     app.log.info(
       `Transcodage : ${transcodePath} — ${config.transcode.maxSessions} session(s), ` +
         `expiration après ${config.transcode.idleSeconds} s`,
@@ -178,6 +221,7 @@ async function main(): Promise<void> {
    * serveur tue les processus restants et vide le répertoire de travail.
    */
   const shutdown = (): void => {
+    subtitleWorker?.stop();
     void (sessionManager?.stop() ?? Promise.resolve())
       .catch(() => undefined)
       .then(() => app.close())

@@ -194,7 +194,7 @@ describe('buildRemuxArgs', () => {
     segmentDuration: 2,
     endTime: PRIMER_END,
     outputDir: 'D:\\work\\sess',
-    audioStreamIndex: null,
+    audio: { kind: 'auto', channels: 6 } as const,
   };
 
   it('COPIE la vidéo — jamais de réencodage sur du H.264', () => {
@@ -253,8 +253,24 @@ describe('buildRemuxArgs', () => {
     expect(buildRemuxArgs(base)[buildRemuxArgs(base).indexOf('-hls_flags') + 1]).toContain('temp_file');
   });
 
-  it('sélectionne une piste audio explicite quand on la précise', () => {
-    expect(buildRemuxArgs({ ...base, audioStreamIndex: 2 })).toContain('0:a:2?');
+  it('sélectionne une piste audio par son index ABSOLU', () => {
+    expect(buildRemuxArgs({ ...base, audio: { kind: 'stream', streamIndex: 2, channels: 6 } })).toContain('0:2');
+  });
+
+  it('écarte explicitement sous-titres, données et chapitres', () => {
+    // Le fichier #365 porte deux polices TrueType sur lesquelles ffmpeg échoue,
+    // et deux couvertures MJPEG qu'il prendrait pour des flux vidéo.
+    const args = buildRemuxArgs(base);
+    expect(args).toContain('-sn');
+    expect(args).toContain('-dn');
+    expect(args[args.indexOf('-map_chapters') + 1]).toBe('-1');
+  });
+
+  it('ne produit AUCUN son quand l’audio est rendu à part', () => {
+    const args = buildRemuxArgs({ ...base, audio: { kind: 'none' } });
+    expect(args).toContain('-an');
+    expect(args).not.toContain('-c:a');
+    expect(args[args.indexOf('-c:v') + 1]).toBe('copy');
   });
 
   it('borne l’analyse du fichier d’entrée', () => {

@@ -6,18 +6,30 @@
  * des segments que ffmpeg ne produira jamais.
  */
 import type { Db } from '../db/index.js';
+import type { AudioChoice } from '../transcode/args.js';
 import { hasUsableBaseLayer, readDolbyVision, unsupportedProfileReason } from '../transcode/dovi.js';
 import { ffprobeFor } from '../transcode/keyframes.js';
+import { needsSeparateAudio } from '../transcode/manifest.js';
 import { segmentPlanOf } from '../transcode/plan.js';
 import {
   PRIMER_COUNT,
   PRIMER_DURATION,
   SEGMENT_DURATION,
+  planAudioSegments,
   planSegments,
   type PlannedSegment,
 } from '../transcode/segments.js';
-import type { SourceInfo } from '../transcode/session.js';
+import type { AudioRendition, SourceInfo } from '../transcode/session.js';
 import { decidePlayback, type PlaybackDecision, type PlaybackUrls } from './playability.js';
+import {
+  labelAudioTracks,
+  pickDefaultAudio,
+  selectSubtitleTracks,
+  type AudioTrackRow,
+  type LabelledAudioTrack,
+  type LabelledSubtitleTrack,
+  type SubtitleTrackRow,
+} from './tracks.js';
 
 export interface MediaRow {
   id: number;
@@ -100,8 +112,9 @@ export async function resolveDecision(
   media: MediaRow,
   urls: PlaybackUrls,
   options: { transcodeAvailable: boolean },
-): Promise<{ decision: PlaybackDecision; source: SourceInfo }> {
+): Promise<{ decision: PlaybackDecision; source: SourceInfo; tracks: TrackSelection }> {
   const enriched = await ensureDolbyVision(db, ffmpegBinary, media);
+  const tracks = tracksOf(db, media.id);
 
   const size = dimensionsOf(enriched.resolution);
   const source: SourceInfo = {
@@ -109,7 +122,6 @@ export async function resolveDecision(
     height: size.height,
     frameRate: null,
     hdr: (enriched.hdr as SourceInfo['hdr']) ?? null,
-    audioChannels: audioChannelsOf(db, enriched.id),
   };
 
   const decision = decidePlayback(
@@ -131,20 +143,28 @@ export async function resolveDecision(
       return {
         decision: { ...decision, mode: 'unsupported', source: null, reason: unsupportedProfileReason(info) },
         source,
+        tracks,
       };
     }
   }
 
-  return { decision, source };
+  return { decision, source, tracks };
 }
 
 export interface ResolvedPlayback {
   decision: PlaybackDecision;
-  /** Découpe en segments. Vide quand le fichier n'est pas lisible. */
+  /** Découpe de la vidéo. Vide quand le fichier n'est pas lisible. */
   plan: PlannedSegment[];
   source: SourceInfo;
   /** Renseigné quand la découpe a demandé une énumération des images clés. */
   keyframeProbeMs: number;
+  tracks: TrackSelection;
+  /** Piste audio muxée dans la vidéo, ou `none` quand l'audio est rendu à part. */
+  muxedAudio: AudioChoice;
+  /** Pistes exposées comme rendus séparés. Vide quand l'audio reste muxé. */
+  audioRenditions: AudioRendition[];
+  /** Découpe des rendus audio. Vide quand l'audio reste muxé. */
+  audioPlan: PlannedSegment[];
 }
 
 /**
@@ -160,11 +180,12 @@ export async function resolvePlayback(
   urls: PlaybackUrls,
   options: { transcodeAvailable: boolean },
 ): Promise<ResolvedPlayback> {
-  const { decision, source } = await resolveDecision(db, ffmpegBinary, media, urls, options);
+  const { decision, source, tracks } = await resolveDecision(db, ffmpegBinary, media, urls, options);
   const enriched = media;
+  const layout = audioLayoutOf(tracks, enriched.durationSeconds ?? 0);
 
   if (decision.mode === 'direct' || decision.mode === 'unsupported') {
-    return { decision, plan: [], source, keyframeProbeMs: 0 };
+    return { decision, plan: [], source, keyframeProbeMs: 0, tracks, ...layout };
   }
 
   /*
@@ -186,6 +207,8 @@ export async function resolvePlayback(
       plan: planSegments(enriched.durationSeconds ?? 0),
       source,
       keyframeProbeMs: 0,
+      tracks,
+      ...layout,
     };
   }
 
@@ -197,18 +220,109 @@ export async function resolvePlayback(
     mtimeMs: enriched.mtimeMs,
   });
 
-  return { decision, plan: segments, source, keyframeProbeMs: probeMs };
+  return { decision, plan: segments, source, keyframeProbeMs: probeMs, tracks, ...layout };
 }
 
-/** Nombre de canaux de la piste audio par défaut, pour choisir le downmix. */
-function audioChannelsOf(db: Db, mediaFileId: number): number | null {
-  const row = db
-    .prepare(
-      `SELECT channels FROM audio_track WHERE media_file_id = ?
-       ORDER BY is_default DESC, stream_index LIMIT 1`,
-    )
-    .get(mediaFileId) as { channels: number | null } | undefined;
-  return row?.channels ?? null;
+// ---------------------------------------------------------------------------
+// Pistes audio et sous-titres
+// ---------------------------------------------------------------------------
+
+/**
+ * Ce que le lecteur doit savoir des pistes d'un fichier.
+ *
+ * Calculé À PARTIR DE LA BASE, jamais en re-sondant : les tables `audio_track`
+ * et `embedded_subtitle` sont remplies par la passe ffprobe, et relancer
+ * ffprobe sur un MKV de 30 Go pour afficher un menu coûterait des secondes.
+ */
+export interface TrackSelection {
+  audio: LabelledAudioTrack[];
+  /**
+   * Les lignes brutes, telles qu'elles sont en base.
+   *
+   * Portées ici pour que la résolution d'une préférence — qui a besoin du titre
+   * pour écarter l'audiodescription — n'ait pas à refaire la requête.
+   */
+  audioRows: AudioTrackRow[];
+  /** Index de flux de la piste retenue à l'ouverture, sans préférence. */
+  defaultAudio: number | null;
+  subtitles: LabelledSubtitleTrack[];
+  /** Le fichier n'a QUE des sous-titres image : le sélecteur doit le dire. */
+  imageOnlySubtitles: boolean;
+}
+
+export function tracksOf(db: Db, mediaFileId: number): TrackSelection {
+  const audioRows = (
+    db
+      .prepare(
+        `SELECT stream_index AS streamIndex, codec, channels, language, title, is_default AS isDefault
+         FROM audio_track WHERE media_file_id = ? ORDER BY stream_index`,
+      )
+      .all(mediaFileId) as (Omit<AudioTrackRow, 'isDefault'> & { isDefault: number })[]
+  ).map((row) => ({ ...row, isDefault: row.isDefault === 1 }));
+
+  const subtitleRows = (
+    db
+      .prepare(
+        `SELECT stream_index AS streamIndex, codec, language, title,
+                is_forced AS isForced, is_default AS isDefault, is_image_based AS isImageBased
+         FROM embedded_subtitle WHERE media_file_id = ? ORDER BY stream_index`,
+      )
+      .all(mediaFileId) as (Omit<SubtitleTrackRow, 'isForced' | 'isDefault' | 'isImageBased'> & {
+      isForced: number;
+      isDefault: number;
+      isImageBased: number;
+    })[]
+  ).map((row) => ({
+    ...row,
+    isForced: row.isForced === 1,
+    isDefault: row.isDefault === 1,
+    isImageBased: row.isImageBased === 1,
+  }));
+
+  const selection = selectSubtitleTracks(subtitleRows);
+
+  return {
+    audio: labelAudioTracks(audioRows),
+    audioRows,
+    defaultAudio: pickDefaultAudio(audioRows),
+    subtitles: selection.tracks,
+    imageOnlySubtitles: selection.imageOnly,
+  };
+}
+
+/**
+ * Comment l'audio est produit : muxé dans la vidéo, ou à part.
+ *
+ * La décision est DÉTERMINISTE, tirée du seul nombre de pistes. C'est
+ * indispensable : la session est créée à la première requête et réutilisée
+ * ensuite, donc deux requêtes qui aboutiraient à des choix différents
+ * produiraient un manifeste que la session ne sait pas honorer.
+ */
+export function audioLayoutOf(
+  tracks: TrackSelection,
+  durationSeconds: number,
+): { muxedAudio: AudioChoice; audioRenditions: AudioRendition[]; audioPlan: PlannedSegment[] } {
+  if (!needsSeparateAudio(tracks.audio.length)) {
+    const only = tracks.audio[0];
+    return {
+      muxedAudio:
+        only === undefined
+          ? { kind: 'auto', channels: null }
+          : { kind: 'stream', streamIndex: only.streamIndex, channels: only.channels },
+      audioRenditions: [],
+      audioPlan: [],
+    };
+  }
+
+  return {
+    // La vidéo ne porte alors AUCUN son : c'est ce que le manifeste annonce.
+    muxedAudio: { kind: 'none' },
+    audioRenditions: tracks.audio.map((track) => ({
+      streamIndex: track.streamIndex,
+      channels: track.channels,
+    })),
+    audioPlan: planAudioSegments(durationSeconds),
+  };
 }
 
 export { PRIMER_COUNT, PRIMER_DURATION, SEGMENT_DURATION };

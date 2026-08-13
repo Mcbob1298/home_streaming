@@ -21,7 +21,10 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { Db } from '../db/index.js';
 import { mimeTypeFor, type PlaybackDecision } from '../playback/playability.js';
-import { findMedia as findResolvable, resolveDecision } from '../playback/resolve.js';
+import { preferenceFor, savePreference } from '../playback/preferences.js';
+import { findMedia as findResolvable, resolveDecision, tracksOf } from '../playback/resolve.js';
+import { preferenceFrom, resolveAudioChoice, resolveSubtitleChoice } from '../playback/tracks.js';
+import { readinessOf, requestExtraction, wakeSubtitleWorker } from '../transcode/subtitleQueue.js';
 import { episodeLabel } from '../progress/rules.js';
 import { progressOf } from '../progress/store.js';
 import { currentUserId } from '../progress/user.js';
@@ -48,6 +51,18 @@ interface MediaFileRow {
 function readId(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+/**
+ * Index de flux facultatif : entier positif ou nul, ou rien.
+ *
+ * `null` et l'absence signifient tous deux « aucune piste » — c'est ce que le
+ * lecteur envoie pour « Sous-titres désactivés ».
+ */
+function readOptionalIndex(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
 function findMediaFile(db: Db, id: number): MediaFileRow | undefined {
@@ -215,12 +230,39 @@ function subtitlesOf(db: Db, mediaFileId: number): SubtitleTrack[] {
     }));
 }
 
+/** Une piste proposée dans le menu de l'engrenage. */
+export interface TrackOption {
+  /** Index ABSOLU du flux dans le fichier. Sert d'identifiant côté lecteur. */
+  streamIndex: number;
+  label: string;
+  language: string | null;
+}
+
+export interface SubtitleOption extends TrackOption {
+  kind: 'forced' | 'sdh' | 'full';
+}
+
 export interface PlayabilityResponse extends PlaybackDecision {
   media: MediaContext | null;
   next: { mediaFileId: number; label: string } | null;
   subtitles: SubtitleTrack[];
   /** Position de reprise, en secondes. Zéro si l'œuvre n'a jamais été commencée. */
   resumeSeconds: number;
+  /** Pistes audio du fichier, libellées. Vide sur un fichier muet. */
+  audioTracks: TrackOption[];
+  /** Piste audio à ouvrir : préférence mémorisée, sinon règle automatique. */
+  defaultAudioStream: number | null;
+  /** Sous-titres embarqués exposés, image écartée. */
+  embeddedSubtitles: SubtitleOption[];
+  /** Sous-titre à activer à l'ouverture. Null pour « Désactivés ». */
+  defaultSubtitleStream: number | null;
+  /**
+   * Le fichier n'a QUE des sous-titres image.
+   *
+   * Le sélecteur l'annonce alors explicitement : ne rien afficher laisserait
+   * croire que le fichier n'en a aucun, ce qui est faux.
+   */
+  imageOnlySubtitles: boolean;
 }
 
 /**
@@ -256,6 +298,8 @@ export function registerStreamRoutes(
   app: FastifyInstance,
   db: Db,
   transcoding: () => { available: boolean; ffmpegBinary: string },
+  /** Racine du cache de sous-titres, ou null quand ffmpeg est absent. */
+  subtitleCacheDir: () => string | null,
 ): void {
   // -------------------------------------------------------------------------
   // GET /api/stream/:id/playability — la décision, et de quoi habiller le lecteur
@@ -281,7 +325,7 @@ export function registerStreamRoutes(
      * Le plan n'est PAS calculé ici — énumérer les images clés d'un film de
      * deux heures pour afficher une fiche coûterait plusieurs secondes.
      */
-    const { decision } = await resolveDecision(
+    const { decision, tracks } = await resolveDecision(
       db,
       ffmpegBinary,
       media,
@@ -289,18 +333,126 @@ export function registerStreamRoutes(
       { transcodeAvailable: available },
     );
 
+    const userId = currentUserId(db, request);
+    const context = contextOf(db, file);
+
+    /*
+     * Le choix mémorisé porte sur l'ŒUVRE — le film, ou la SÉRIE entière —
+     * jamais sur l'épisode : c'est ce qui le fait traverser une saison.
+     */
+    const preference = preferenceFor(
+      db,
+      userId,
+      context === null ? null : context.kind === 'movie' ? 'movie' : 'show',
+      context?.workId ?? null,
+    );
+
     const response: PlayabilityResponse = {
       ...decision,
-      media: contextOf(db, file),
+      media: context,
       next: nextEpisodeOf(db, file),
       subtitles: subtitlesOf(db, file.id),
-      resumeSeconds: resumeSecondsOf(db, file, currentUserId(db, request)),
+      resumeSeconds: resumeSecondsOf(db, file, userId),
+      audioTracks: tracks.audio.map((track) => ({
+        streamIndex: track.streamIndex,
+        label: track.label,
+        language: track.language,
+      })),
+      defaultAudioStream: resolveAudioChoice(tracks.audioRows, preference),
+      embeddedSubtitles: tracks.subtitles.map((track) => ({
+        streamIndex: track.streamIndex,
+        label: track.label,
+        language: track.language,
+        kind: track.kind,
+      })),
+      defaultSubtitleStream: resolveSubtitleChoice(tracks.subtitles, preference),
+      imageOnlySubtitles: tracks.imageOnlySubtitles,
     };
+
+    /*
+     * On inscrit le fichier DÈS la playability, avant que la lecture ne
+     * démarre : c est le premier instant où l on sait ce qui sera regardé.
+     */
+    if (requestExtraction(db, file.id)) wakeSubtitleWorker();
 
     // La décision dépend de l'état de la base, qui peut changer à la passe
     // suivante : rien à mettre en cache côté navigateur.
     void reply.header('Cache-Control', 'no-store');
     return response;
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/stream/:id/subtitles — quelles pistes sont PRÊTES
+  // -------------------------------------------------------------------------
+  /*
+   * Le lecteur interroge cette route pendant qu'une extraction tourne, et
+   * enrichit son sélecteur au fur et à mesure. Elle ne lit qu'un répertoire :
+   * la solliciter toutes les cinq secondes ne coûte rien.
+   */
+  app.get('/api/stream/:id/subtitles', (request, reply) => {
+    const id = readId((request.params as { id: string }).id);
+    if (id === null) return reply.code(400).send({ error: 'Identifiant de fichier invalide.' });
+
+    const cacheDir = subtitleCacheDir();
+    if (cacheDir === null) return { tracks: [], preparing: false };
+
+    const tracks = tracksOf(db, id);
+    const state = readinessOf(db, cacheDir, id);
+    const ready = new Set(state.ready);
+
+    void reply.header('Cache-Control', 'no-store');
+    return {
+      tracks: tracks.subtitles.map((track) => ({
+        streamIndex: track.streamIndex,
+        label: track.label,
+        language: track.language,
+        kind: track.kind,
+        ready: ready.has(track.streamIndex),
+      })),
+      preparing: state.preparing,
+      imageOnlySubtitles: tracks.imageOnlySubtitles,
+    };
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/stream/:id/tracks — le lecteur enregistre un choix de piste
+  // -------------------------------------------------------------------------
+  // Le corps porte des INDEX DE FLUX, ce que le lecteur connaît ; ce qui est
+  // mémorisé est la LANGUE et la nature, qui traversent les épisodes.
+  app.post('/api/stream/:id/tracks', (request, reply) => {
+    const id = readId((request.params as { id: string }).id);
+    if (id === null) return reply.code(400).send({ error: 'Identifiant de fichier invalide.' });
+
+    const file = findMediaFile(db, id);
+    if (file === undefined) return reply.code(404).send({ error: 'Fichier inconnu.' });
+
+    const body = request.body as { audioStream?: unknown; subtitleStream?: unknown } | undefined;
+    const audioStream = readOptionalIndex(body?.audioStream);
+    const subtitleStream = readOptionalIndex(body?.subtitleStream);
+
+    const tracks = tracksOf(db, id);
+    const audio = tracks.audio.find((track) => track.streamIndex === audioStream);
+    const subtitle = tracks.subtitles.find((track) => track.streamIndex === subtitleStream);
+
+    // Un index qui ne correspond à rien est refusé plutôt qu'ignoré : mémoriser
+    // silencieusement autre chose que ce qui a été demandé serait pire.
+    if (audioStream !== null && audio === undefined) {
+      return reply.code(400).send({ error: `Aucune piste audio pour le flux ${audioStream}.` });
+    }
+    if (subtitleStream !== null && subtitle === undefined) {
+      return reply.code(400).send({ error: `Aucun sous-titre exposé pour le flux ${subtitleStream}.` });
+    }
+
+    const context = contextOf(db, file);
+    savePreference(
+      db,
+      currentUserId(db, request),
+      context === null ? null : context.kind === 'movie' ? 'movie' : 'show',
+      context?.workId ?? null,
+      preferenceFrom(audio, subtitle),
+    );
+
+    return reply.code(204).send();
   });
 
   // -------------------------------------------------------------------------

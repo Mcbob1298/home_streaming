@@ -11,6 +11,8 @@ import {
   outputSize,
   shouldResize,
   softwareFilterChain,
+  qsvFilterChain,
+  supportedBackend,
   vaapiFilterChain,
   type TranscodeRunOptions,
 } from './encode.js';
@@ -23,7 +25,7 @@ function options(overrides: Partial<TranscodeRunOptions> = {}): TranscodeRunOpti
     segmentDuration: 4,
     endTime: null,
     outputDir: '/app/data/transcode/mf-1',
-    audioStreamIndex: null,
+    audio: { kind: 'auto', channels: 6 },
     sourceWidth: 3840,
     sourceHeight: 2160,
     frameRate: 24,
@@ -31,7 +33,6 @@ function options(overrides: Partial<TranscodeRunOptions> = {}): TranscodeRunOpti
     hardware: 'vaapi',
     device: '/dev/dri/renderD128',
     toneMap: 'libplacebo',
-    audioChannels: 6,
     ...overrides,
   };
 }
@@ -324,13 +325,40 @@ describe('buildTranscodeArgs', () => {
     expect(args[args.indexOf('-map_chapters') + 1]).toBe('-1');
   });
 
-  it('retient une piste audio désignée', () => {
-    expect(buildTranscodeArgs(options({ audioStreamIndex: 3 }))).toContain('0:a:3?');
+  it('retient une piste audio désignée par son index ABSOLU', () => {
+    /*
+     * `audio_track.stream_index` porte l'index du flux dans le fichier : sur le
+     * fichier #365, les pistes audio sont les flux 1 à 6. Les traduire en
+     * « 0:a:N » supposerait qu'ils soient contigus et commencent à zéro.
+     */
+    const args = buildTranscodeArgs(options({ audio: { kind: 'stream', streamIndex: 3, channels: 6 } }));
+    expect(args).toContain('0:3');
+    expect(args).not.toContain('0:a:3');
   });
 
-  it('efface les métadonnées HDR après tone mapping', () => {
-    // Un flux BT.709 étiqueté smpte2084 ressortirait délavé malgré la conversion.
-    const args = buildTranscodeArgs(options({ hdr: 'HDR10' }));
+  it('ne produit AUCUN son quand l’audio est rendu à part', () => {
+    const args = buildTranscodeArgs(options({ audio: { kind: 'none' } }));
+    expect(args).toContain('-an');
+    expect(args).not.toContain('-c:a');
+    expect(args).not.toContain('-af');
+  });
+
+  it('NE REDIT PAS les métadonnées de couleur en matériel', () => {
+    /*
+     * ffmpeg 7 insère un auto_scale quand la ligne de commande redemande une
+     * conversion que le filtre a déjà faite — et ce filtre logiciel ne sait pas
+     * traiter une surface VAAPI. Résultat : aucun paquet écrit, les 164
+     * fichiers HDR en échec. C'est le filtre qui étiquette, vérifié en sortie.
+     */
+    for (const hardware of ['vaapi', 'qsv'] as const) {
+      const args = buildTranscodeArgs(options({ hdr: 'HDR10', hardware }));
+      expect(args, hardware).not.toContain('-colorspace');
+      expect(args, hardware).not.toContain('-color_trc');
+    }
+  });
+
+  it('les garde en repli logiciel, où elles sont sans danger', () => {
+    const args = buildTranscodeArgs(options({ hdr: 'HDR10', hardware: null }));
     expect(args[args.indexOf('-color_trc') + 1]).toBe('bt709');
     expect(args[args.indexOf('-colorspace') + 1]).toBe('bt709');
   });
@@ -371,10 +399,23 @@ describe('buildTranscodeArgs', () => {
     expect(args[args.indexOf('-hls_flags') + 1]).toContain('temp_file');
   });
 
-  it('applique le downmix explicite', () => {
-    expect(buildTranscodeArgs(options({ audioChannels: 6 }))[
-      buildTranscodeArgs(options({ audioChannels: 6 })).indexOf('-af') + 1
-    ]).toContain('pan=stereo');
+  it('applique le downmix de la piste RETENUE, pas de la première', () => {
+    /*
+     * Le nombre de canaux vient du choix de piste, et suit donc celle qu'on
+     * produit réellement. C'est ce qui fait que la matrice s'applique à TOUTES
+     * les pistes du fichier #365 et pas seulement à la première.
+     */
+    const cinqUn = buildTranscodeArgs(options({ audio: { kind: 'stream', streamIndex: 4, channels: 6 } }));
+    expect(cinqUn[cinqUn.indexOf('-af') + 1]).toContain('pan=stereo');
+
+    const stereo = buildTranscodeArgs(options({ audio: { kind: 'stream', streamIndex: 5, channels: 2 } }));
+    expect(stereo[stereo.indexOf('-af') + 1]).not.toContain('pan=stereo');
+  });
+
+  it('impose la fréquence d’échantillonnage de sortie', () => {
+    // C'est elle qui rend la découpe des segments audio calculable.
+    const args = buildTranscodeArgs(options());
+    expect(args[args.indexOf('-ar') + 1]).toBe('48000');
   });
 });
 
@@ -399,5 +440,69 @@ describe('shouldResize — le bourrage de macroblocs', () => {
   it('ne réduit pas une source plus petite', () => {
     expect(shouldResize(720, 1080)).toBe(false);
     expect(shouldResize(null, 1080)).toBe(false);
+  });
+});
+
+describe('supportedBackend — le repli silencieux est fini', () => {
+  it('accepte les deux moteurs réellement pilotés', () => {
+    expect(supportedBackend('vaapi')).toEqual({ backend: 'vaapi', unsupported: null });
+    expect(supportedBackend('qsv')).toEqual({ backend: 'qsv', unsupported: null });
+  });
+
+  it('n’invente rien quand rien n’a été détecté', () => {
+    expect(supportedBackend(null)).toEqual({ backend: null, unsupported: null });
+  });
+
+  it('EXPLIQUE un moteur détecté mais non implémenté', () => {
+    /*
+     * C'est le défaut qui a fait transcoder en logiciel à x0,47 sans un mot :
+     * `hardware === 'vaapi' ? 'vaapi' : null` ramenait QSV à null.
+     */
+    const choix = supportedBackend('nvenc');
+    expect(choix.backend).toBeNull();
+    expect(choix.unsupported).toContain('nvenc');
+    expect(choix.unsupported).toContain('encode.ts');
+  });
+});
+
+describe('qsvFilterChain', () => {
+  it('fait tout d’un seul filtre', () => {
+    const chaine = qsvFilterChain({ targetHeight: 1080, hdr: 'HDR10', sourceWidth: 3840, sourceHeight: 2160 });
+    expect(chaine).toBe('vpp_qsv=w=1920:h=1080:tonemap=1:format=nv12');
+  });
+
+  it('n’active le tone mapping que sur du HDR', () => {
+    const sdr = qsvFilterChain({ targetHeight: 1080, hdr: null, sourceWidth: 3840, sourceHeight: 2160 });
+    expect(sdr).not.toContain('tonemap');
+    expect(sdr).toBe('vpp_qsv=w=1920:h=1080:format=nv12');
+  });
+
+  it('ne redimensionne pas une source déjà sous la cible', () => {
+    expect(qsvFilterChain({ targetHeight: 1080, hdr: null, sourceWidth: 1920, sourceHeight: 1080 })).toBe(
+      'vpp_qsv=format=nv12',
+    );
+  });
+
+  it('impose le format même sans rien d’autre à faire', () => {
+    // Sans cela, une source 10 bits produirait du H.264 High 10.
+    expect(qsvFilterChain({ targetHeight: 1080, hdr: null, sourceWidth: null, sourceHeight: null })).toContain(
+      'format=nv12',
+    );
+  });
+});
+
+describe('buildTranscodeArgs — QSV', () => {
+  it('ouvre le périphérique et décode en matériel', () => {
+    const args = buildTranscodeArgs(options({ hardware: 'qsv' }));
+    expect(args[args.indexOf('-init_hw_device') + 1]).toBe('qsv=hw:/dev/dri/renderD128');
+    expect(args[args.indexOf('-hwaccel') + 1]).toBe('qsv');
+    expect(args[args.indexOf('-hwaccel_output_format') + 1]).toBe('qsv');
+    expect(args[args.indexOf('-c:v') + 1]).toBe('h264_qsv');
+  });
+
+  it('n’emprunte AUCUN chemin VAAPI', () => {
+    const args = buildTranscodeArgs(options({ hardware: 'qsv' })).join(' ');
+    expect(args).not.toContain('vaapi');
+    expect(args).not.toContain('hwmap');
   });
 });

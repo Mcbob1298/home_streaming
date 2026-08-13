@@ -12,11 +12,19 @@ import { TranscodeSession, type SessionInput, type SessionOptions } from './sess
 export interface ManagerOptions {
   ffmpegBinary: string;
   workDir: string;
+  /**
+   * Cache des sous-titres extraits.
+   *
+   * SÉPARÉ de `workDir`, qui est effacé à chaque démarrage et vit en tmpfs :
+   * une extraction coûte une traversée complète du fichier, elle doit survivre
+   * au redémarrage du serveur.
+   */
+  subtitleCacheDir: string;
   maxSessions: number;
   /** Une session sans requête depuis ce délai est tuée. */
   idleSeconds: number;
   /** Accélération retenue au démarrage, après essai réel. */
-  hardware: 'vaapi' | null;
+  hardware: SessionOptions['hardware'];
   device: string;
   toneMap: SessionOptions['toneMap'];
   onLog: SessionOptions['onLog'];
@@ -34,6 +42,11 @@ export class SessionManager {
     return this.options.ffmpegBinary;
   }
 
+  /** Où vivent les sous-titres extraits. Persiste d'un démarrage à l'autre. */
+  get subtitleCacheDir(): string {
+    return this.options.subtitleCacheDir;
+  }
+
   /**
    * Efface le répertoire de travail et arme le balayage.
    *
@@ -44,6 +57,9 @@ export class SessionManager {
   async start(): Promise<void> {
     await rm(this.options.workDir, { recursive: true, force: true }).catch(() => undefined);
     await mkdir(this.options.workDir, { recursive: true });
+    // Le cache de sous-titres, lui, n'est PAS effacé : il est le fruit d'une
+    // traversée complète de chaque fichier.
+    await mkdir(this.options.subtitleCacheDir, { recursive: true });
 
     this.sweeper = setInterval(() => void this.sweep(), 10_000);
     this.sweeper.unref();

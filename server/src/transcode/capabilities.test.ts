@@ -52,7 +52,10 @@ describe('probeArgs', () => {
 
   it('ouvre le périphérique pour VAAPI', () => {
     const args = probeArgs('vaapi', device);
-    expect(args[args.indexOf('-vaapi_device') + 1]).toBe(device);
+    expect(args[args.indexOf('-init_hw_device') + 1]).toBe(`vaapi=va:${device}`);
+    // L essai passe par le filtre de la production, pas seulement par
+    // l encodeur : un moteur dont scale_vaapi echoue serait retenu a tort.
+    expect(args.join(' ')).toContain('scale_vaapi=format=nv12');
     expect(args[args.indexOf('-c:v') + 1]).toBe('h264_vaapi');
     // hwupload est indispensable : sans lui l'image reste en mémoire centrale
     // et l'encodeur matériel n'a rien à encoder.
@@ -134,7 +137,7 @@ describe('describeCapabilities', () => {
 
   it('dit pourquoi les autres ont été écartés', () => {
     const lines = describeCapabilities(capabilities({ probes: [QSV_FAILED, VAAPI_OK] })).join('\n');
-    expect(lines).toContain('Candidats écartés');
+    expect(lines).toContain('Encodeurs écartés, et pourquoi');
     expect(lines).toContain('MFX session');
   });
 
@@ -153,8 +156,31 @@ describe('describeCapabilities', () => {
     const lines = describeCapabilities(
       capabilities({ hardware: null, probes: [QSV_FAILED, { ...VAAPI_OK, ok: false, error: 'pas de display' }] }),
     ).join('\n');
-    expect(lines).toContain('Aucune accélération matérielle utilisable');
-    expect(lines).toContain('logiciel');
+    expect(lines).toContain('Encodage vidéo : LOGICIEL');
+    expect(lines).toContain('libx264');
+  });
+
+  it('ANNONCE un moteur détecté mais non piloté', () => {
+    /*
+     * Le cas qui a coûté cher : QSV détecté, converti en null par un ternaire,
+     * et transcodage logiciel à x0,47 sans un mot dans le journal.
+     */
+    const lines = describeCapabilities(capabilities({ hardware: 'nvenc', probes: [VAAPI_OK] }), {
+      backend: null,
+      unsupported: 'nvenc n’est pas implémenté dans encode.ts',
+    }).join('\n');
+
+    expect(lines).toContain('ATTENTION');
+    expect(lines).toContain('encode.ts');
+  });
+
+  it('nomme les moteurs fonctionnels qui n’ont pas été retenus', () => {
+    // Les taire laisserait croire qu'ils ont échoué.
+    const lines = describeCapabilities(
+      capabilities({ hardware: 'vaapi', probes: [VAAPI_OK, { ...QSV_FAILED, ok: true, error: null }] }),
+    ).join('\n');
+    expect(lines).toContain('Également fonctionnels');
+    expect(lines).toContain('h264_qsv');
   });
 
   it('distingue une décision issue du cache', () => {
@@ -194,10 +220,19 @@ describe('toneMapProbeArgs', () => {
     }
   });
 
-  it('ouvre Vulkan pour libplacebo', () => {
+  it('part d une surface VAAPI et DERIVE Vulkan, comme la production', () => {
+    /*
+     * Defaut corrige : l essai montait une mire logicielle sur un peripherique
+     * Vulkan neuf, la ou la vraie chaine derive le peripherique depuis VAAPI.
+     * L essai reussissait, la production echouait sur
+     * VK_ERROR_OUT_OF_DEVICE_MEMORY, et le serveur annoncait un moteur qui n a
+     * jamais produit une image.
+     */
     const args = toneMapProbeArgs('libplacebo', device);
-    expect(args[args.indexOf('-init_hw_device') + 1]).toBe('vulkan=vk');
+    expect(args[args.indexOf('-init_hw_device') + 1]).toBe(`vaapi=va:${device}`);
+    expect(args.join(' ')).toContain('hwmap=derive_device=vulkan');
     expect(args.join(' ')).toContain('libplacebo=');
+    expect(args.join(' ')).toContain('hwmap=derive_device=vaapi:reverse=1');
   });
 
   it('ouvre le nœud de rendu pour tonemap_vaapi', () => {

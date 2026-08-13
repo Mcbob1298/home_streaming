@@ -15,6 +15,8 @@
     "//playable": "TEMPORAIRE : liste les fichiers lisibles sans transcodage. Disparaîtra avec l'arrivée du transcodage.",
     "playable": "npm --prefix server run playable --",
     "keyframes": "npm --prefix server run keyframes --",
+    "//subtitles": "Passe de prechauffage : extrait les sous-titres texte embarques de toute la bibliotheque, pour qu une lecture ne les attende jamais.",
+    "subtitles": "npm --prefix server run subtitles --",
     "migrate-paths": "npm --prefix server run migrate-paths --",
     "build": "npm --prefix server run build && npm --prefix web run build",
     "start": "npm --prefix server run start",

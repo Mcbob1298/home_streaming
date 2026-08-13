@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
 
-import type { SubtitleTrack } from '../../api';
+import type { SubtitleOption, SubtitleTrack, TrackOption } from '../../api';
 import { formatRemaining, formatTime, progressOf, ratioFromPointer } from './playerControls';
+import type { SubtitleChoice } from './VideoSurface';
 
 /**
  * Barres du haut et du bas, reprises de Disney+.
@@ -24,8 +25,17 @@ export interface PlayerChromeProps {
   duration: number | null;
   /** Fin de la plage déjà téléchargée, pour la barre de mise en tampon. */
   buffered: number;
+  /** Sous-titres EXTERNES, posés à côté du fichier. */
   subtitles: SubtitleTrack[];
-  activeSubtitleId: number | null;
+  /** Sous-titres EMBARQUÉS dans le conteneur, extraits par ffmpeg. */
+  embeddedSubtitles: SubtitleOption[];
+  /** Le fichier n'a que des sous-titres image : le menu doit le dire. */
+  imageOnlySubtitles: boolean;
+  /** Une extraction est en cours : des pistes vont encore apparaître. */
+  preparingSubtitles: boolean;
+  subtitleChoice: SubtitleChoice;
+  audioTracks: TrackOption[];
+  audioStream: number | null;
   next: { mediaFileId: number; label: string } | null;
   fullscreen: boolean;
   onBack: () => void;
@@ -35,7 +45,8 @@ export interface PlayerChromeProps {
   onVolume: (value: number) => void;
   onMute: () => void;
   onFullscreen: () => void;
-  onSubtitle: (id: number | null) => void;
+  onSubtitle: (choice: SubtitleChoice) => void;
+  onAudio: (streamIndex: number) => void;
   onNext: () => void;
 }
 
@@ -51,7 +62,12 @@ export function PlayerChrome(props: PlayerChromeProps) {
     duration,
     buffered,
     subtitles,
-    activeSubtitleId,
+    embeddedSubtitles,
+    imageOnlySubtitles,
+    preparingSubtitles,
+    subtitleChoice,
+    audioTracks,
+    audioStream,
     next,
     fullscreen,
   } = props;
@@ -130,11 +146,20 @@ export function PlayerChrome(props: PlayerChromeProps) {
                 {ICONS.gear}
               </IconButton>
               {menuOpen && (
-                <SubtitleMenu
+                <SettingsMenu
                   subtitles={subtitles}
-                  activeId={activeSubtitleId}
-                  onPick={(id) => {
-                    props.onSubtitle(id);
+                  embeddedSubtitles={embeddedSubtitles}
+                  imageOnlySubtitles={imageOnlySubtitles}
+                  preparingSubtitles={preparingSubtitles}
+                  subtitleChoice={subtitleChoice}
+                  audioTracks={audioTracks}
+                  audioStream={audioStream}
+                  onSubtitle={(choice) => {
+                    props.onSubtitle(choice);
+                    setMenuOpen(false);
+                  }}
+                  onAudio={(streamIndex) => {
+                    props.onAudio(streamIndex);
                     setMenuOpen(false);
                   }}
                 />
@@ -277,49 +302,139 @@ function VolumeControl({
   );
 }
 
-function SubtitleMenu({
+/**
+ * Le menu de l'engrenage : la langue, puis les sous-titres.
+ *
+ * L'audio vient EN PREMIER parce que c'est le réglage qu'on cherche le plus
+ * souvent — 78 % des fichiers ont plusieurs pistes. Le sélecteur ne s'affiche
+ * pas quand il n'y a rien à choisir : une liste d'un seul élément n'est pas un
+ * choix, c'est du bruit.
+ */
+function SettingsMenu({
   subtitles,
-  activeId,
-  onPick,
+  embeddedSubtitles,
+  imageOnlySubtitles,
+  preparingSubtitles,
+  subtitleChoice,
+  audioTracks,
+  audioStream,
+  onSubtitle,
+  onAudio,
 }: {
   subtitles: SubtitleTrack[];
-  activeId: number | null;
-  onPick: (id: number | null) => void;
+  embeddedSubtitles: SubtitleOption[];
+  imageOnlySubtitles: boolean;
+  preparingSubtitles: boolean;
+  subtitleChoice: SubtitleChoice;
+  audioTracks: TrackOption[];
+  audioStream: number | null;
+  onSubtitle: (choice: SubtitleChoice) => void;
+  onAudio: (streamIndex: number) => void;
 }) {
-  return (
-    <div className="absolute right-0 bottom-14 w-64 rounded bg-[rgba(15,17,23,0.96)] py-2 shadow-[0_16px_38px_rgba(0,0,0,0.7)]">
-      <div className="px-4 pt-1 pb-2 text-[11px] font-semibold tracking-[0.2em] text-faible uppercase">
-        Sous-titres
-      </div>
+  const nothingToShow = subtitles.length === 0 && embeddedSubtitles.length === 0;
 
-      <MenuItem label="Désactivés" active={activeId === null} onClick={() => onPick(null)} />
-      {subtitles.map((track) => (
+  return (
+    <div className="absolute right-0 bottom-14 max-h-[60vh] w-72 overflow-y-auto rounded bg-[rgba(15,17,23,0.96)] py-2 shadow-[0_16px_38px_rgba(0,0,0,0.7)]">
+      {audioTracks.length > 1 && (
+        <>
+          <MenuHeading>Langue</MenuHeading>
+          {audioTracks.map((track) => (
+            <MenuItem
+              key={track.streamIndex}
+              label={track.label}
+              active={audioStream === track.streamIndex}
+              onClick={() => onAudio(track.streamIndex)}
+            />
+          ))}
+          <div className="my-2 border-t border-[rgba(249,249,249,0.1)]" />
+        </>
+      )}
+
+      <MenuHeading>Sous-titres</MenuHeading>
+
+      {/* « Désactivés » en premier : c'est l'état par défaut, et le plus demandé. */}
+      <MenuItem label="Désactivés" active={subtitleChoice.kind === 'off'} onClick={() => onSubtitle({ kind: 'off' })} />
+
+      {embeddedSubtitles.map((track) => (
         <MenuItem
-          key={track.id}
+          key={`e-${track.streamIndex}`}
           label={track.label}
-          active={activeId === track.id}
-          onClick={() => onPick(track.id)}
+          active={subtitleChoice.kind === 'embedded' && subtitleChoice.streamIndex === track.streamIndex}
+          /*
+           * Une piste pas encore extraite reste VISIBLE mais inerte : la faire
+           * apparaître d'un coup déplacerait les lignes sous le curseur, et la
+           * cacher laisserait croire qu'elle n'existe pas.
+           */
+          disabled={track.ready === false}
+          onClick={() => onSubtitle({ kind: 'embedded', streamIndex: track.streamIndex })}
         />
       ))}
 
-      {subtitles.length === 0 && (
+      {preparingSubtitles && (
         <p className="px-4 py-2 text-[13px] leading-[1.5] text-faible">
-          Aucun sous-titre externe pour ce fichier. Les pistes incluses dans les MKV demandent ffmpeg et
-          arriveront avec le transcodage.
+          Préparation en cours… Les pistes grisées s'activeront d'elles-mêmes, sans interrompre la lecture.
         </p>
+      )}
+
+      {subtitles.map((track) => (
+        <MenuItem
+          key={`x-${track.id}`}
+          label={track.label}
+          active={subtitleChoice.kind === 'external' && subtitleChoice.id === track.id}
+          onClick={() => onSubtitle({ kind: 'external', id: track.id })}
+        />
+      ))}
+
+      {/*
+        168 fichiers n'ont QUE des sous-titres image. Ne rien afficher
+        laisserait croire qu'ils n'en ont aucun, ce qui est faux : on dit ce
+        qu'il en est plutôt que de laisser chercher.
+      */}
+      {imageOnlySubtitles && (
+        <p className="px-4 py-2 text-[13px] leading-[1.5] text-faible">
+          Sous-titres non convertibles (format image). Ce fichier ne porte que des pistes PGS ou VOBSUB, qui
+          sont des images et non du texte.
+        </p>
+      )}
+
+      {nothingToShow && !imageOnlySubtitles && (
+        <p className="px-4 py-2 text-[13px] leading-[1.5] text-faible">Aucun sous-titre pour ce fichier.</p>
       )}
     </div>
   );
 }
 
-function MenuItem({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function MenuHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="px-4 pt-1 pb-2 text-[11px] font-semibold tracking-[0.2em] text-faible uppercase">
+      {children}
+    </div>
+  );
+}
+
+function MenuItem({
+  label,
+  active,
+  onClick,
+  disabled = false,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  /** Piste annoncée mais pas encore prête : visible, inerte. */
+  disabled?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
       aria-current={active}
-      className={`flex w-full items-center gap-3 px-4 py-2 text-left text-[14px] transition-colors hover:bg-[rgba(249,249,249,0.1)] ${
-        active ? 'font-semibold text-texte' : 'text-faible'
+      aria-busy={disabled}
+      className={`flex w-full items-center gap-3 px-4 py-2 text-left text-[14px] transition-colors ${
+        disabled
+          ? 'cursor-default text-[rgba(249,249,249,0.35)] italic'
+          : `hover:bg-[rgba(249,249,249,0.1)] ${active ? 'font-semibold text-texte' : 'text-faible'}`
       }`}
     >
       <span className="w-4 shrink-0">{active ? '✓' : ''}</span>

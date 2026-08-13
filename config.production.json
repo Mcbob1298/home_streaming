@@ -7,7 +7,7 @@
   "transcode": {
     "//": "Répertoire de travail des sessions ffmpeg. Monté en tmpfs par le compose : écrit et relu sans arrêt, et sans aucune raison de survivre à un redémarrage.",
     "workDir": "./data/transcode",
-    "maxSessions": 3,
+    "maxSessions": 4,
     "idleSeconds": 60
   },
 

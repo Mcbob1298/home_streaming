@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { api, type Playability } from '../api';
 import { PlayerChrome } from '../components/player/PlayerChrome';
-import { VideoSurface } from '../components/player/VideoSurface';
+import { VideoSurface, type SubtitleChoice } from '../components/player/VideoSurface';
 import {
   IDLE_MS,
   actionForKey,
@@ -152,7 +152,18 @@ function Player({ data, startAt }: { data: Playability; startAt: number }) {
   const [buffered, setBuffered] = useState(0);
   const [ready, setReady] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const [activeSubtitleId, setActiveSubtitleId] = useState<number | null>(null);
+
+  /*
+   * Les pistes ouvrent sur ce que le serveur a décidé : préférence mémorisée
+   * s'il y en a une, règle automatique sinon. Le lecteur n'applique aucune
+   * règle de son côté — il n'en connaîtrait qu'une moitié.
+   */
+  const [audioStream, setAudioStream] = useState<number | null>(data.defaultAudioStream);
+  const [subtitle, setSubtitle] = useState<SubtitleChoice>(
+    data.defaultSubtitleStream === null
+      ? { kind: 'off' }
+      : { kind: 'embedded', streamIndex: data.defaultSubtitleStream },
+  );
   const [fullscreen, setFullscreen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
 
@@ -395,6 +406,69 @@ function Player({ data, startAt }: { data: Playability; startAt: number }) {
 
   useProgressReporting(data.mediaFileId, video, onWatched);
 
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * LES SOUS-TITRES ARRIVENT PENDANT LA LECTURE.
+   *
+   * Une extraction traverse le fichier entier — plus de cinq minutes sur un
+   * remux 4K. La lecture n'attend pas : elle démarre sans sous-titres, et on
+   * interroge l'état toutes les cinq secondes tant qu'il en reste à produire.
+   * La requête ne lit qu'un répertoire, elle ne coûte rien.
+   *
+   * L'interrogation s'arrête d'elle-même dès que tout est prêt.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  const readiness = useQuery({
+    queryKey: ['subtitles', data.mediaFileId],
+    queryFn: () => api.subtitleReadiness(data.mediaFileId),
+    refetchInterval: (query) => (query.state.data?.preparing === true ? 5000 : false),
+    // L'état initial vient de playability : on ne repart pas d'une liste vide.
+    initialData: {
+      tracks: data.embeddedSubtitles.map((track) => ({ ...track, ready: false })),
+      preparing: data.embeddedSubtitles.length > 0,
+      imageOnlySubtitles: data.imageOnlySubtitles,
+    },
+  });
+
+  const embeddedSubtitles = readiness.data.tracks;
+  const preparingSubtitles = readiness.data.preparing;
+
+  /*
+   * Tout changement de piste est mémorisé aussitôt, sans attendre la fin de la
+   * lecture : quelqu'un qui bascule en version originale à la première minute
+   * doit retrouver son choix sur l'épisode suivant, même s'il abandonne celui-ci.
+   *
+   * L'échec est silencieux — perdre une préférence n'est pas une raison
+   * d'interrompre un film.
+   */
+  const remember = useCallback(
+    (nextAudio: number | null, nextSubtitle: SubtitleChoice) => {
+      void api
+        .saveTrackChoice(data.mediaFileId, {
+          audioStream: nextAudio,
+          subtitleStream: nextSubtitle.kind === 'embedded' ? nextSubtitle.streamIndex : null,
+        })
+        .catch(() => undefined);
+    },
+    [data.mediaFileId],
+  );
+
+  const chooseAudio = useCallback(
+    (streamIndex: number) => {
+      setAudioStream(streamIndex);
+      remember(streamIndex, subtitle);
+    },
+    [remember, subtitle],
+  );
+
+  const chooseSubtitle = useCallback(
+    (choice: SubtitleChoice) => {
+      setSubtitle(choice);
+      remember(audioStream, choice);
+    },
+    [remember, audioStream],
+  );
+
   const backdrop = data.media?.backdropPath ?? null;
 
   return (
@@ -436,7 +510,11 @@ function Player({ data, startAt }: { data: Playability; startAt: number }) {
       <VideoSurface
         source={data.source as NonNullable<Playability['source']>}
         subtitles={data.subtitles}
-        activeSubtitleId={activeSubtitleId}
+        audioTracks={data.audioTracks}
+        embeddedSubtitles={embeddedSubtitles}
+        audioStream={audioStream}
+        subtitle={subtitle}
+        mediaFileId={data.mediaFileId}
         videoRef={video}
         onAttachError={setFailure}
         className={`h-full w-full transition-opacity duration-500 motion-reduce:transition-none ${
@@ -474,7 +552,12 @@ function Player({ data, startAt }: { data: Playability; startAt: number }) {
         duration={duration}
         buffered={buffered}
         subtitles={data.subtitles}
-        activeSubtitleId={activeSubtitleId}
+        embeddedSubtitles={embeddedSubtitles}
+        imageOnlySubtitles={data.imageOnlySubtitles}
+        preparingSubtitles={preparingSubtitles}
+        subtitleChoice={subtitle}
+        audioTracks={data.audioTracks}
+        audioStream={audioStream}
         next={data.next}
         fullscreen={fullscreen}
         onBack={escape}
@@ -484,7 +567,8 @@ function Player({ data, startAt }: { data: Playability; startAt: number }) {
         onVolume={changeVolume}
         onMute={toggleMute}
         onFullscreen={toggleFullscreen}
-        onSubtitle={setActiveSubtitleId}
+        onSubtitle={chooseSubtitle}
+        onAudio={chooseAudio}
         onNext={goNext}
       />
     </div>

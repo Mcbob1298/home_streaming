@@ -1,6 +1,19 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
-import type { PlaybackSource, SubtitleTrack } from '../../api';
+import type { PlaybackSource, SubtitleOption, SubtitleTrack, TrackOption } from '../../api';
+
+/**
+ * Le sous-titre affiché, quelle qu'en soit la provenance.
+ *
+ * Deux mécanismes coexistent — un fichier `.srt` posé à côté du film devient un
+ * élément `track`, une piste de MKV devient un rendu du manifeste — et le reste
+ * du lecteur n'a pas à savoir lequel s'applique. Il choisit, VideoSurface
+ * exécute.
+ */
+export type SubtitleChoice =
+  | { kind: 'off' }
+  | { kind: 'external'; id: number }
+  | { kind: 'embedded'; streamIndex: number };
 
 /**
  * L'ÉLÉMENT VIDÉO ET SON BRANCHEMENT DE SOURCE.
@@ -57,13 +70,31 @@ const HLS_CONFIG = {
 };
 
 /**
+ * Ce qu'on garde d'une instance hls.js pour piloter ses rendus.
+ *
+ * Typé à la main plutôt qu'importé : hls.js est chargé dynamiquement, et
+ * importer son type au niveau du module ferait entrer les 525 ko dans le
+ * paquet principal — exactement ce que l'import dynamique évite.
+ */
+interface HlsController {
+  audioTracks: { id: number; name: string; lang?: string }[];
+  subtitleTracks: { id: number; name: string; lang?: string }[];
+  audioTrack: number;
+  subtitleTrack: number;
+}
+
+/**
  * Branche une source sur l'élément, et rend de quoi la débrancher.
  *
  * Le nettoyage compte autant que le branchement : sans lui, l'élément
  * continuerait de télécharger l'ancienne source après un changement d'épisode,
  * et hls.js garderait un lecteur entier en vie.
  */
-async function attachSource(video: HTMLVideoElement, source: PlaybackSource): Promise<() => void> {
+async function attachSource(
+  video: HTMLVideoElement,
+  source: PlaybackSource,
+  onController: (controller: HlsController | null) => void,
+): Promise<() => void> {
   /** Débranchement commun à la lecture native, fichier comme HLS Safari. */
   const detachNative = (): void => {
     video.removeAttribute('src');
@@ -107,8 +138,10 @@ async function attachSource(video: HTMLVideoElement, source: PlaybackSource): Pr
       const hls = new Hls(HLS_CONFIG);
       hls.loadSource(source.url);
       hls.attachMedia(video);
+      onController(hls as unknown as HlsController);
 
       return () => {
+        onController(null);
         // destroy() coupe les requêtes en cours, libère le worker et détache
         // le média. Rien ne doit survivre à un changement d'épisode.
         hls.destroy();
@@ -120,24 +153,60 @@ async function attachSource(video: HTMLVideoElement, source: PlaybackSource): Pr
 
 export interface VideoSurfaceProps {
   source: PlaybackSource;
+  /** Sous-titres EXTERNES, servis comme éléments `track`. */
   subtitles: SubtitleTrack[];
-  /** Piste active, ou null pour « Désactivés ». */
-  activeSubtitleId: number | null;
+  /** Pistes audio du manifeste, dans l'ordre où il les déclare. */
+  audioTracks: TrackOption[];
+  /** Sous-titres EMBARQUÉS, rendus du manifeste, dans le même ordre. */
+  embeddedSubtitles: SubtitleOption[];
+  /** Piste audio voulue, par son index de flux. */
+  audioStream: number | null;
+  /** Sous-titre voulu, quelle qu'en soit la provenance. */
+  subtitle: SubtitleChoice;
+  /** Pour bâtir l URL des sous-titres embarqués. */
+  mediaFileId: number;
   videoRef: React.RefObject<HTMLVideoElement>;
   onAttachError: (message: string) => void;
   className?: string;
 }
 
+/**
+ * Position d'une piste dans le manifeste, à partir de son index de flux.
+ *
+ * hls.js numérote ses rendus dans l'ordre de déclaration du manifeste, qui est
+ * celui de la liste qu'on a construite : la correspondance est donc positionnelle.
+ * Rendre -1 quand la piste est introuvable laisse hls.js sur son choix courant,
+ * ce qui vaut mieux que de couper le son.
+ */
+function positionOf(tracks: { streamIndex: number }[], streamIndex: number | null): number {
+  if (streamIndex === null) return -1;
+  return tracks.findIndex((track) => track.streamIndex === streamIndex);
+}
+
+/** URL du WebVTT d'une piste embarquée. Répond 202 tant qu'elle se prépare. */
+function subtitleUrl(mediaFileId: number, streamIndex: number): string {
+  return `/api/hls/${mediaFileId}/sub-${streamIndex}.vtt`;
+}
+
 export function VideoSurface({
   source,
   subtitles,
-  activeSubtitleId,
+  audioTracks,
+  embeddedSubtitles,
+  audioStream,
+  subtitle,
+  mediaFileId,
   videoRef,
   onAttachError,
   className,
 }: VideoSurfaceProps) {
   const errorHandler = useRef(onAttachError);
   errorHandler.current = onAttachError;
+
+  /** L'instance hls.js en cours, quand la source en utilise une. */
+  const controller = useRef<HlsController | null>(null);
+  /** Incrémenté à chaque branchement, pour réappliquer les choix de piste. */
+  const [attached, setAttached] = useState(0);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -152,7 +221,12 @@ export function VideoSurface({
     let cancelled = false;
     let detach: (() => void) | null = null;
 
-    void attachSource(video, source)
+    void attachSource(video, source, (instance) => {
+      controller.current = instance;
+      // Les rendus n'existent qu'une fois le manifeste analysé : le compteur
+      // relance l'application des choix quand l'instance change.
+      if (!cancelled) setAttached((count) => count + 1);
+    })
       .then((cleanup) => {
         if (cancelled) cleanup();
         else detach = cleanup;
@@ -168,18 +242,67 @@ export function VideoSurface({
   }, [source.url, source.type, videoRef]);
 
   /*
-   * Les pistes de texte sont pilotées par leur `mode`, pas par le montage :
+   * ───────────────────────────────────────────────────────────────────────────
+   * CHANGER DE PISTE AUDIO NE RECHARGE RIEN.
+   *
+   * `hls.audioTrack` remplace le flux audio EN PLACE : la vidéo continue, la
+   * position est conservée, seul le tampon audio est reconstruit. C'est
+   * précisément ce que le manifeste maître achète — recharger la source
+   * repartirait du début.
+   *
+   * L'écriture est retentée à chaque rendu utile parce que les rendus du
+   * manifeste n'existent qu'après son analyse, qui est asynchrone.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  useEffect(() => {
+    const hls = controller.current;
+    if (hls === null || hls.audioTracks.length === 0) return;
+
+    const position = positionOf(audioTracks, audioStream);
+    if (position >= 0 && position < hls.audioTracks.length && hls.audioTrack !== position) {
+      hls.audioTrack = position;
+    }
+  }, [audioStream, audioTracks, attached]);
+
+  /**
+   * hls.js ne pilote AUCUN sous-titre : le manifeste n'en déclare pas.
+   *
+   * Une piste embarquée n'existe qu'une fois extraite, ce qui prend des minutes
+   * et arrive pendant la lecture. On la sert donc en élément « track », qui
+   * s'attache sans toucher au manifeste. La remise à -1 défait ce qu'une
+   * version précédente du manifeste aurait pu sélectionner.
+   */
+  useEffect(() => {
+    const hls = controller.current;
+    if (hls !== null && hls.subtitleTrack !== -1) hls.subtitleTrack = -1;
+  }, [attached]);
+
+  /*
+   * Sous-titres EXTERNES : pilotés par leur `mode`, pas par le montage —
    * démonter un `track` actif laisse parfois le rendu à l'écran sous Chrome.
    */
   useEffect(() => {
     const video = videoRef.current;
     if (video === null) return;
 
+    /*
+     * Les deux origines vivent dans le même espace de noms : « x- » pour un
+     * fichier externe, « e- » pour une piste embarquée. Un préfixe plutôt qu'un
+     * nombre, parce que l'identifiant d'un sous-titre externe et l'index de flux
+     * d'une piste embarquée se recouvrent sans désigner la même chose.
+     */
+    const active =
+      subtitle.kind === 'external'
+        ? 'x-' + String(subtitle.id)
+        : subtitle.kind === 'embedded'
+          ? 'e-' + String(subtitle.streamIndex)
+          : null;
+
     for (const track of Array.from(video.textTracks)) {
-      const id = Number(track.id);
-      track.mode = activeSubtitleId !== null && id === activeSubtitleId ? 'showing' : 'disabled';
+      if (track.id === '') continue;
+      track.mode = track.id === active ? 'showing' : 'disabled';
     }
-  }, [activeSubtitleId, subtitles, videoRef]);
+  }, [subtitle, subtitles, embeddedSubtitles, videoRef]);
 
   return (
     <video
@@ -192,10 +315,29 @@ export function VideoSurface({
       preload="auto"
       crossOrigin="anonymous"
     >
+      {/*
+        Les pistes PRÊTES seulement : un « track » dont la source répond 202
+        resterait vide sans rien dire. Elles apparaissent au fur et à mesure que
+        l'extraction avance, sans que la lecture s'interrompe — ajouter un
+        élément ne touche ni à la source ni au tampon.
+      */}
+      {embeddedSubtitles
+        .filter((track) => track.ready !== false)
+        .map((track) => (
+          <track
+            key={'e-' + String(track.streamIndex)}
+            id={'e-' + String(track.streamIndex)}
+            kind="subtitles"
+            src={subtitleUrl(mediaFileId, track.streamIndex)}
+            srcLang={track.language ?? 'und'}
+            label={track.label}
+          />
+        ))}
+
       {subtitles.map((track) => (
         <track
-          key={track.id}
-          id={String(track.id)}
+          key={'x-' + String(track.id)}
+          id={'x-' + String(track.id)}
           kind="subtitles"
           src={track.url}
           srcLang={track.language ?? 'und'}

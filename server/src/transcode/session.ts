@@ -1,5 +1,5 @@
 /**
- * Sessions de transcodage : un processus ffmpeg, ses segments, sa fin de vie.
+ * Sessions de transcodage : des processus ffmpeg, leurs segments, leur fin de vie.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * LE DÉFAUT À NE PAS AVOIR : un ffmpeg orphelin qui tourne indéfiniment.
@@ -9,16 +9,31 @@
  *   2. le lecteur prévient explicitement quand il quitte la page ;
  *   3. l'arrêt du serveur tue tout ce qui reste.
  * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * UNE SESSION, PLUSIEURS SORTIES.
+ *
+ * Depuis les pistes audio multiples, une session n'est plus un processus mais
+ * un ensemble : une sortie vidéo, et zéro ou plusieurs sorties audio produites
+ * À LA DEMANDE — une piste n'est encodée qu'à partir du moment où quelqu'un en
+ * réclame un segment. Chacune a son propre répertoire, son propre plan, son
+ * propre enchaînement d'exécutions et son propre cycle de vie.
+ *
+ * Le prix : sur un fichier multipiste, deux processus lisent le MÊME fichier.
+ * C'est ce qui achète le changement de langue sans relancer la vidéo, et c'est
+ * pourquoi on ne le paie qu'à partir de deux pistes.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
-import { buildRemuxArgs, planRuns, type RunPlan } from './args.js';
+import { buildAudioArgs, buildRemuxArgs, planRuns, type AudioChoice, type RunPlan } from './args.js';
 import type { ToneMapBackend } from './capabilities.js';
-import { buildTranscodeArgs, type HdrKind } from './encode.js';
+import { buildTranscodeArgs, type HardwareBackend, type HdrKind } from './encode.js';
 import {
+  AUDIO_SEGMENT_DURATION,
   INIT_FILE_NAME,
   PRIMER_COUNT,
   PRIMER_DURATION,
@@ -56,7 +71,7 @@ export interface SessionOptions {
   ffmpegBinary: string;
   workDir: string;
   /** Accélération retenue au démarrage, après essai réel. */
-  hardware: 'vaapi' | null;
+  hardware: HardwareBackend;
   device: string;
   /** Moteur de tone mapping retenu au démarrage, après essai réel. */
   toneMap: ToneMapBackend | null;
@@ -73,13 +88,20 @@ export interface SourceInfo {
   height: number | null;
   frameRate: number | null;
   hdr: HdrKind;
-  audioChannels: number | null;
+}
+
+/** Une piste audio produite à part, telle que la session doit la connaître. */
+export interface AudioRendition {
+  /** Index ABSOLU du flux dans le fichier. */
+  streamIndex: number;
+  channels: number | null;
 }
 
 export interface SessionInput {
   mediaFileId: number;
   /** Chemin EXACT du fichier, tel que readdir l'a rendu. */
   inputPath: string;
+  /** Découpe de la vidéo. */
   plan: PlannedSegment[];
   /**
    * `remux` copie la vidéo, `transcode` la réencode. La distinction vient de la
@@ -88,23 +110,33 @@ export interface SessionInput {
    */
   mode: 'remux' | 'transcode';
   source?: SourceInfo;
+  /**
+   * Piste audio muxée DANS la vidéo.
+   *
+   * `{ kind: 'none' }` quand les pistes sont rendues à part : la sortie vidéo
+   * ne porte alors aucun son, et c'est ce que le manifeste maître annonce.
+   */
+  muxedAudio: AudioChoice;
+  /** Découpe des rendus audio séparés. Vide quand l'audio reste muxé. */
+  audioPlan: PlannedSegment[];
+  /** Pistes que le manifeste expose comme rendus. Vide quand l'audio est muxé. */
+  audioRenditions: AudioRendition[];
 }
 
 export type SessionState = 'idle' | 'running' | 'finished' | 'failed';
 
-export class TranscodeSession {
-  readonly mediaFileId: number;
-  readonly dir: string;
-
-  private readonly input: SessionInput;
-  private readonly options: SessionOptions;
-
+/**
+ * Une sortie ffmpeg : un répertoire, un plan, une chaîne d'exécutions.
+ *
+ * C'est le cœur commun de la vidéo et de chaque piste audio. Ce qui les
+ * distingue — les arguments et la façon de découper les exécutions — est passé
+ * en paramètre plutôt que testé à l'intérieur.
+ */
+class SegmentProducer {
   private child: ChildProcess | null = null;
   /** Exécutions restantes de la chaîne en cours (amorce puis croisière). */
   private queue: RunPlan[] = [];
   private currentStart = 0;
-
-  private lastAccessAt = Date.now();
   private state: SessionState = 'idle';
   private lastError: string | null = null;
   private closed = false;
@@ -112,23 +144,21 @@ export class TranscodeSession {
   /** Instant du lancement, pour mesurer le délai jusqu'au premier segment. */
   startedAt = 0;
 
-  constructor(input: SessionInput, options: SessionOptions) {
-    this.input = input;
-    this.options = options;
-    this.mediaFileId = input.mediaFileId;
-    this.dir = path.join(options.workDir, `mf-${input.mediaFileId}`);
-  }
-
-  get idleMs(): number {
-    return Date.now() - this.lastAccessAt;
-  }
+  constructor(
+    readonly dir: string,
+    private readonly plan: PlannedSegment[],
+    private readonly runsFrom: (startIndex: number) => RunPlan[],
+    private readonly argsFor: (run: RunPlan) => string[],
+    private readonly options: SessionOptions,
+    private readonly label: string,
+  ) {}
 
   get status(): { state: SessionState; producedFrom: number; error: string | null } {
     return { state: this.state, producedFrom: this.currentStart, error: this.lastError };
   }
 
-  touch(): void {
-    this.lastAccessAt = Date.now();
+  get segmentCountPlanned(): number {
+    return this.plan.length;
   }
 
   async prepare(): Promise<void> {
@@ -144,8 +174,6 @@ export class TranscodeSession {
    *   • il est loin devant/derrière → on relance ffmpeg à sa position.
    */
   async ensureSegment(index: number): Promise<string | null> {
-    this.touch();
-
     const file = path.join(this.dir, segmentFileName(index));
     if (existsSync(file)) return file;
 
@@ -169,8 +197,6 @@ export class TranscodeSession {
    * précède est forcément écrit en entier.
    */
   async ensureInit(): Promise<string | null> {
-    this.touch();
-
     const snapshot = path.join(this.dir, INIT_SNAPSHOT);
     if (existsSync(snapshot)) return snapshot;
 
@@ -205,7 +231,7 @@ export class TranscodeSession {
     this.stopChild();
     await this.prepare();
 
-    this.queue = planRuns(index, this.input.plan, PRIMER_COUNT, SEGMENT_DURATION, PRIMER_DURATION);
+    this.queue = this.runsFrom(index);
 
     if (this.queue.length === 0) {
       this.state = 'failed';
@@ -228,33 +254,7 @@ export class TranscodeSession {
       return;
     }
 
-    const common = {
-      input: this.input.inputPath,
-      startTime: run.startTime,
-      startNumber: run.startNumber,
-      segmentDuration: run.segmentDuration,
-      endTime: run.endTime,
-      outputDir: this.dir,
-      audioStreamIndex: null,
-    };
-
-    const source = this.input.source;
-    const args =
-      this.input.mode === 'transcode'
-        ? buildTranscodeArgs({
-            ...common,
-            sourceWidth: source?.width ?? null,
-            sourceHeight: source?.height ?? null,
-            frameRate: source?.frameRate ?? null,
-            hdr: source?.hdr ?? null,
-            audioChannels: source?.audioChannels ?? null,
-            hardware: this.options.hardware,
-            device: this.options.device,
-            toneMap: this.options.toneMap,
-          })
-        : buildRemuxArgs(common);
-
-    const child = spawn(this.options.ffmpegBinary, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(this.options.ffmpegBinary, this.argsFor(run), { stdio: ['ignore', 'ignore', 'pipe'] });
     this.child = child;
 
     let stderr = '';
@@ -267,7 +267,7 @@ export class TranscodeSession {
       if (this.child !== child) return;
       this.state = 'failed';
       this.lastError = error.message;
-      this.options.onLog('ffmpeg n’a pas pu démarrer', { error: error.message });
+      this.options.onLog('ffmpeg n’a pas pu démarrer', { sortie: this.label, error: error.message });
     });
 
     child.on('exit', (code, signal) => {
@@ -288,7 +288,7 @@ export class TranscodeSession {
       this.state = 'failed';
       this.lastError = stderr.trim().split('\n').at(-1) ?? `ffmpeg a quitté avec le code ${code}`;
       this.child = null;
-      this.options.onLog('ffmpeg en échec', { mediaFileId: this.mediaFileId, code, stderr: this.lastError });
+      this.options.onLog('ffmpeg en échec', { sortie: this.label, code, stderr: this.lastError });
     });
   }
 
@@ -334,13 +334,202 @@ export class TranscodeSession {
     }
   }
 
-  /** Taille des segments produits, pour l'état du cache. */
   async segmentCount(): Promise<number> {
     try {
       return (await readdir(this.dir)).filter((name) => name.endsWith('.m4s')).length;
     } catch {
       return 0;
     }
+  }
+}
+
+export class TranscodeSession {
+  readonly mediaFileId: number;
+  readonly dir: string;
+
+  private readonly input: SessionInput;
+  private readonly options: SessionOptions;
+
+  private readonly video: SegmentProducer;
+  /** Rendus audio réellement démarrés, indexés par index de flux. */
+  private readonly audio = new Map<number, SegmentProducer>();
+
+  private lastAccessAt = Date.now();
+  private closed = false;
+
+  constructor(input: SessionInput, options: SessionOptions) {
+    this.input = input;
+    this.options = options;
+    this.mediaFileId = input.mediaFileId;
+    this.dir = path.join(options.workDir, `mf-${input.mediaFileId}`);
+
+    this.video = new SegmentProducer(
+      path.join(this.dir, 'v'),
+      input.plan,
+      (startIndex) => planRuns(startIndex, input.plan, PRIMER_COUNT, SEGMENT_DURATION, PRIMER_DURATION),
+      (run) => this.videoArgs(run),
+      options,
+      'vidéo',
+    );
+  }
+
+  get idleMs(): number {
+    return Date.now() - this.lastAccessAt;
+  }
+
+  get status(): { state: SessionState; producedFrom: number; error: string | null } {
+    return this.video.status;
+  }
+
+  /** Délai jusqu'au premier segment vidéo, pour les mesures. */
+  get startedAt(): number {
+    return this.video.startedAt;
+  }
+
+  touch(): void {
+    this.lastAccessAt = Date.now();
+  }
+
+  async prepare(): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
+    await this.video.prepare();
+  }
+
+  // --- Vidéo ---------------------------------------------------------------
+
+  async ensureSegment(index: number): Promise<string | null> {
+    this.touch();
+    return this.video.ensureSegment(index);
+  }
+
+  async ensureInit(): Promise<string | null> {
+    this.touch();
+    return this.video.ensureInit();
+  }
+
+  async startAt(index: number): Promise<void> {
+    return this.video.startAt(index);
+  }
+
+  // --- Audio ---------------------------------------------------------------
+
+  /**
+   * Rendu d'une piste audio, créé à la PREMIÈRE demande.
+   *
+   * C'est ce qui évite d'encoder les six pistes du fichier #365 pour n'en
+   * écouter qu'une. Une piste qui n'est pas dans le manifeste n'a pas de rendu :
+   * rendre null vaut mieux que d'encoder ce qu'on n'a jamais annoncé.
+   */
+  private producerFor(streamIndex: number): SegmentProducer | null {
+    const existing = this.audio.get(streamIndex);
+    if (existing !== undefined) return existing;
+
+    const rendition = this.input.audioRenditions.find((track) => track.streamIndex === streamIndex);
+    if (rendition === undefined || this.closed) return null;
+
+    const plan = this.input.audioPlan;
+    const producer = new SegmentProducer(
+      path.join(this.dir, `a-${streamIndex}`),
+      plan,
+      // Pas d'amorce courte : un segment audio de huit secondes se produit en
+      // quelques dizaines de millisecondes, le démarrage est tenu par la vidéo.
+      (startIndex) => planRuns(startIndex, plan, 0, AUDIO_SEGMENT_DURATION, AUDIO_SEGMENT_DURATION),
+      (run) =>
+        buildAudioArgs({
+          input: this.input.inputPath,
+          startTime: run.startTime,
+          startNumber: run.startNumber,
+          endTime: run.endTime,
+          outputDir: path.join(this.dir, `a-${streamIndex}`),
+          streamIndex,
+          channels: rendition.channels,
+          segmentDuration: run.segmentDuration,
+        }),
+      this.options,
+      `audio ${streamIndex}`,
+    );
+
+    this.audio.set(streamIndex, producer);
+    return producer;
+  }
+
+  async ensureAudioSegment(streamIndex: number, index: number): Promise<string | null> {
+    this.touch();
+    const producer = this.producerFor(streamIndex);
+    if (producer === null) return null;
+    await producer.prepare();
+    return producer.ensureSegment(index);
+  }
+
+  async ensureAudioInit(streamIndex: number): Promise<string | null> {
+    this.touch();
+    const producer = this.producerFor(streamIndex);
+    if (producer === null) return null;
+    await producer.prepare();
+    return producer.ensureInit();
+  }
+
+  /** Erreur du rendu audio, pour la réponse HTTP. */
+  audioError(streamIndex: number): string | null {
+    return this.audio.get(streamIndex)?.status.error ?? null;
+  }
+
+  // --- Arguments -----------------------------------------------------------
+
+  private videoArgs(run: RunPlan): string[] {
+    const common = {
+      input: this.input.inputPath,
+      startTime: run.startTime,
+      startNumber: run.startNumber,
+      segmentDuration: run.segmentDuration,
+      endTime: run.endTime,
+      outputDir: this.video.dir,
+      audio: this.input.muxedAudio,
+    };
+
+    const source = this.input.source;
+    return this.input.mode === 'transcode'
+      ? buildTranscodeArgs({
+          ...common,
+          sourceWidth: source?.width ?? null,
+          sourceHeight: source?.height ?? null,
+          frameRate: source?.frameRate ?? null,
+          hdr: source?.hdr ?? null,
+          hardware: this.options.hardware,
+          device: this.options.device,
+          toneMap: this.options.toneMap,
+        })
+      : buildRemuxArgs(common);
+  }
+
+  // --- Fin de vie ----------------------------------------------------------
+
+  /** Tue TOUS les processus de la session et efface son répertoire. */
+  async close(): Promise<void> {
+    this.closed = true;
+
+    await Promise.all([this.video.close(), ...[...this.audio.values()].map((producer) => producer.close())]);
+    this.audio.clear();
+
+    try {
+      await rm(this.dir, { recursive: true, force: true });
+    } catch {
+      // Un répertoire non effacé sera repris au démarrage suivant.
+    }
+  }
+
+  /** Nombre de processus ffmpeg que cette session fait tourner. */
+  get outputCount(): number {
+    return 1 + this.audio.size;
+  }
+
+  /** Segments produits, toutes sorties confondues, pour l'état du cache. */
+  async segmentCount(): Promise<number> {
+    const counts = await Promise.all([
+      this.video.segmentCount(),
+      ...[...this.audio.values()].map((producer) => producer.segmentCount()),
+    ]);
+    return counts.reduce((total, count) => total + count, 0);
   }
 }
 

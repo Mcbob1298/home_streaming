@@ -82,13 +82,26 @@ export interface FfmpegCapabilities {
 /**
  * Ordre de préférence.
  *
- * QuickSync d'abord quand il marche : il décharge davantage le processeur que
- * VAAPI sur du matériel Intel. VAAPI ensuite, qui est le repli universel sur
- * Intel sous Linux. Les autres n'existent que sur la machine de développement.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * VAAPI AVANT QSV, ET C'EST LA MESURE QUI LE DIT.
+ *
+ * QuickSync passait en premier au motif qu'il est « natif Intel ». Sous
+ * ffmpeg 5.1 la question ne se posait pas : QSV échouait à l'initialisation,
+ * l'ancienne libmfx ne connaissant pas l'Alder Lake. Sous ffmpeg 7, oneVPL le
+ * fait marcher — et les deux sont enfin comparables sur cette machine :
+ *
+ *              tone mapping      #2390          #365          #1961 (SDR)
+ *   VAAPI      tonemap_vaapi     x5,78          x6,20         x11,3
+ *   QSV        vpp_qsv           x4,08          x4,04         x10,9
+ *
+ * Soit 40 à 50 % de plus pour VAAPI sur le HDR, à rendu quasi identique — les
+ * noirs de tonemap_vaapi sont à peine plus profonds. QSV reste en second : sur
+ * une machine où VAAPI ne s'initialise pas, il fait le travail.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 const CANDIDATES: { name: HardwareAcceleration; encoder: string }[] = [
-  { name: 'qsv', encoder: 'h264_qsv' },
   { name: 'vaapi', encoder: 'h264_vaapi' },
+  { name: 'qsv', encoder: 'h264_qsv' },
   { name: 'nvenc', encoder: 'h264_nvenc' },
   { name: 'amf', encoder: 'h264_amf' },
   { name: 'videotoolbox', encoder: 'h264_videotoolbox' },
@@ -112,6 +125,13 @@ export function probeArgs(name: HardwareAcceleration | 'software', device: strin
   const sink = ['-f', 'null', '-'];
 
   switch (name) {
+    /*
+     * Les deux essais Intel passent par le filtre de mise à l'échelle que la
+     * production emploie — `vpp_qsv` et `scale_vaapi` — et pas seulement par
+     * l'encodeur. Un moteur dont l'encodeur s'initialise mais dont le filtre
+     * échoue serait retenu à tort, et c'est exactement le genre d'écart entre
+     * l'essai et la production qui a fait passer libplacebo pour utilisable.
+     */
     case 'qsv':
       return [
         ...common,
@@ -121,7 +141,7 @@ export function probeArgs(name: HardwareAcceleration | 'software', device: strin
         'hw',
         ...source,
         '-vf',
-        'format=nv12,hwupload=extra_hw_frames=16',
+        'format=nv12,hwupload=extra_hw_frames=16,vpp_qsv=format=nv12',
         '-c:v',
         'h264_qsv',
         ...sink,
@@ -130,11 +150,13 @@ export function probeArgs(name: HardwareAcceleration | 'software', device: strin
     case 'vaapi':
       return [
         ...common,
-        '-vaapi_device',
-        device,
+        '-init_hw_device',
+        `vaapi=va:${device}`,
+        '-filter_hw_device',
+        'va',
         ...source,
         '-vf',
-        'format=nv12,hwupload',
+        'format=nv12,hwupload,scale_vaapi=format=nv12',
         '-c:v',
         'h264_vaapi',
         ...sink,
@@ -157,87 +179,117 @@ export function probeArgs(name: HardwareAcceleration | 'software', device: strin
 /**
  * Arguments d'essai d'un moteur de tone mapping.
  *
- * Chaque essai convertit une mire en simulant une source HDR : primaires
- * BT.2020 et courbe PQ, sans AUCUNE métadonnée de mastering. C'est exactement
- * le cas qui fait échouer `tonemap_vaapi` sur 161 fichiers — l'essai doit donc
- * le reproduire, sinon il validerait un moteur qui échouera en production.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * L'ESSAI PART D'UNE SURFACE VAAPI, COMME LA PRODUCTION.
+ *
+ * Défaut corrigé, et il avait coûté cher : chaque essai construisait son propre
+ * périphérique et y montait une mire LOGICIELLE (`-init_hw_device vulkan=vk`
+ * puis `hwupload`). La vraie chaîne, elle, part des images décodées par VAAPI et
+ * DÉRIVE le périphérique (`hwmap=derive_device=vulkan`).
+ *
+ * Ce n'est pas la même opération. Sur cette machine, l'essai libplacebo
+ * réussissait et la chaîne réelle échouait — `VK_ERROR_OUT_OF_DEVICE_MEMORY`,
+ * anv ne sachant pas importer une surface VAAPI multi-plan. Le serveur
+ * démarrait donc en annonçant un moteur qui n'a jamais produit une image.
+ *
+ * Une sonde qui valide un chemin que personne n'emprunte est pire que pas de
+ * sonde : elle donne une fausse assurance. Chaque essai reproduit désormais
+ * EXACTEMENT la chaîne de `vaapiFilterChain`.
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * La mire simule une source HDR — primaires BT.2020, courbe PQ — sans AUCUNE
+ * métadonnée de mastering : c'est le cas de 161 des 164 fichiers HDR de cette
+ * bibliothèque, et celui qui faisait échouer `tonemap_vaapi` sous ffmpeg 5.1.
  */
 export function toneMapProbeArgs(backend: ToneMapBackend, device: string): string[] {
   const common = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
-  // Une mire déclarée HDR, sans métadonnées de mastering.
-  const source = [
+
+  /** Mire HDR 10 bits, sans métadonnées de mastering. */
+  const pattern = `${TEST_SOURCE},format=p010,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc`;
+  const sink = ['-f', 'null', '-'];
+
+  if (backend === 'software') {
+    return [
+      ...common,
+      '-f',
+      'lavfi',
+      '-i',
+      pattern,
+      '-vf',
+      'zscale=transfer=linear:npl=100,tonemap=hable:desat=0,zscale=primaries=bt709:transfer=bt709:matrix=bt709,format=yuv420p',
+      ...sink,
+    ];
+  }
+
+  /*
+   * Les trois moteurs matériels partent tous d'une surface VAAPI. Le `hwupload`
+   * initial remplace le décodage matériel : ce qui compte est que les filtres
+   * qui suivent reçoivent une VRAIE surface VAAPI, avec le format de pixels et
+   * les modificateurs DRM qu'elle porte en production.
+   */
+  const onVaapi = [
+    '-init_hw_device',
+    `vaapi=va:${device}`,
+    '-filter_hw_device',
+    'va',
     '-f',
     'lavfi',
     '-i',
-    `${TEST_SOURCE},format=yuv420p10,setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc`,
+    pattern,
   ];
-  const sink = ['-f', 'null', '-'];
 
   switch (backend) {
-    case 'libplacebo':
-      /*
-       * libplacebo travaille sur des surfaces Vulkan. L'essai monte l'image sur
-       * le GPU, la convertit, et la redescend : si l'un des trois échoue, le
-       * moteur n'est pas utilisable.
-       */
-      return [
-        ...common,
-        '-init_hw_device',
-        'vulkan=vk',
-        '-filter_hw_device',
-        'vk',
-        ...source,
-        '-vf',
-        'hwupload,libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=nv12,hwdownload,format=nv12',
-        ...sink,
-      ];
+    case 'tonemap_vaapi':
+      return [...common, ...onVaapi, '-vf', `hwupload,${TONE_MAP_VAAPI_FILTER}`, ...sink];
 
     case 'tonemap_opencl':
       return [
         ...common,
-        '-init_hw_device',
-        `opencl=ocl`,
-        '-filter_hw_device',
-        'ocl',
-        ...source,
+        ...onVaapi,
         '-vf',
-        'hwupload,tonemap_opencl=tonemap=hable:format=nv12,hwdownload,format=nv12',
+        `hwupload,hwmap=derive_device=opencl,${TONE_MAP_OPENCL_FILTER},hwmap=derive_device=vaapi:reverse=1`,
         ...sink,
       ];
 
-    case 'tonemap_vaapi':
+    case 'libplacebo':
       return [
         ...common,
-        '-init_hw_device',
-        `vaapi=va:${device}`,
-        '-filter_hw_device',
-        'va',
-        ...source,
+        ...onVaapi,
         '-vf',
-        'hwupload,tonemap_vaapi=format=nv12:matrix=bt709:primaries=bt709:transfer=bt709',
-        ...sink,
-      ];
-
-    case 'software':
-      return [
-        ...common,
-        ...source,
-        '-vf',
-        'zscale=transfer=linear:npl=100,tonemap=hable:desat=0,zscale=primaries=bt709:transfer=bt709:matrix=bt709,format=yuv420p',
+        `hwupload,hwmap=derive_device=vulkan,${LIBPLACEBO_FILTER},hwmap=derive_device=vaapi:reverse=1`,
         ...sink,
       ];
   }
 }
 
+/*
+ * Les filtres sont déclarés ici et importés par `encode.ts` : c'est ce qui
+ * garantit que l'essai et la production emploient la MÊME chaîne. Les séparer
+ * les laisserait diverger sans que rien ne le signale.
+ */
+export const TONE_MAP_VAAPI_FILTER = 'tonemap_vaapi=format=nv12:matrix=bt709:primaries=bt709:transfer=bt709';
+export const TONE_MAP_OPENCL_FILTER =
+  'tonemap_opencl=tonemap=bt2390:transfer=bt709:matrix=bt709:primaries=bt709:format=nv12';
+export const LIBPLACEBO_FILTER =
+  'libplacebo=tonemapping=bt.2390:colorspace=bt709:color_primaries=bt709:color_trc=bt709:format=nv12';
+
 /**
  * Ordre d'essai des moteurs de tone mapping.
  *
- * `tonemap_vaapi` serait le moins coûteux — 4 % mesurés contre le témoin — mais
- * il exige les métadonnées de mastering que 98 % des fichiers HDR de cette
- * bibliothèque ne portent pas. Il passe donc APRÈS les moteurs qui n'en
- * dépendent pas. Un essai qui échoue le déclasse de toute façon.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * TONEMAP_VAAPI EN PREMIER — LA PRÉMISSE QUI L'EN ÉCARTAIT EST TOMBÉE.
+ *
+ * Il passait en dernier parce qu'il exigeait les métadonnées de mastering
+ * absentes de 161 fichiers sur 164. C'était vrai de ffmpeg 5.1. Sous ffmpeg 7,
+ * l'exigence a disparu : les 164 fichiers HDR de la bibliothèque passent, testés
+ * un par un, et le tone mapping ne coûte que 6 à 11 % contre le témoin.
+ *
+ * libplacebo tombe en dernier avant le logiciel. Il ne fonctionne pas ici — anv
+ * n'importe pas les surfaces VAAPI multi-plan — mais il reste utile sur une
+ * machine dont le pilote Vulkan le supporte. L'essai tranche, plus la liste.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
-const TONE_MAP_ORDER: ToneMapBackend[] = ['libplacebo', 'tonemap_opencl', 'tonemap_vaapi', 'software'];
+const TONE_MAP_ORDER: ToneMapBackend[] = ['tonemap_vaapi', 'tonemap_opencl', 'libplacebo', 'software'];
 
 /**
  * Extrait les noms d'encodeurs de la sortie de `ffmpeg -encoders`.
@@ -508,7 +560,22 @@ export async function detectCapabilities(options: DetectOptions = {}): Promise<F
  * qui se contente d'annoncer son choix laisse une panne d'accélération
  * invisible jusqu'au premier transcodage à 0,3× le temps réel.
  */
-export function describeCapabilities(capabilities: FfmpegCapabilities): string[] {
+/**
+ * Ce que le journal doit dire au démarrage.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * CE QUI EST RÉELLEMENT UTILISÉ, PAS CE QUI A ÉTÉ DÉTECTÉ.
+ *
+ * La distinction n'est pas théorique : QSV a été détecté et retenu pendant que
+ * le serveur transcodait en logiciel, et rien dans le journal ne le disait. On
+ * annonce donc les deux moteurs — encodage ET tone mapping —, ce qui est
+ * effectivement employé, et la RAISON du rejet de chaque candidat écarté.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+export function describeCapabilities(
+  capabilities: FfmpegCapabilities,
+  backend?: { backend: string | null; unsupported: string | null },
+): string[] {
   const lines = [`ffmpeg : ${capabilities.version}`];
 
   lines.push(
@@ -522,23 +589,58 @@ export function describeCapabilities(capabilities: FfmpegCapabilities): string[]
   if (capabilities.hardware !== null) {
     const kept = capabilities.probes.find((entry) => entry.name === capabilities.hardware);
     lines.push(
-      `Accélération matérielle retenue : ${capabilities.hardware.toUpperCase()}` +
+      `Encodage vidéo : ${capabilities.hardware.toUpperCase()}` +
         ` (${kept?.encoder ?? '?'}, ${source}${kept !== undefined && !capabilities.cached ? `, essai en ${kept.ms} ms` : ''})`,
     );
   } else {
     lines.push(
-      `Aucune accélération matérielle utilisable (${source}) : le transcodage vidéo se fera ` +
-        'en logiciel, beaucoup plus lentement. Le remux, lui, ne réencode pas la vidéo et ' +
-        'n’en a pas besoin.',
+      `Encodage vidéo : LOGICIEL (libx264) — aucune accélération utilisable (${source}). ` +
+        'Le transcodage sera beaucoup plus lent que le temps réel. Le remux, lui, ne ' +
+        'réencode pas la vidéo et n’en a pas besoin.',
+    );
+  }
+
+  /*
+   * Le cas qui manquait : un moteur détecté que le code ne sait pas piloter.
+   * Il était converti en `null` sans un mot, et le serveur repartait en
+   * logiciel. Il est désormais annoncé comme l'incident qu'il est.
+   */
+  if (backend?.unsupported != null) {
+    lines.push(`ATTENTION — ${backend.unsupported}`);
+  } else if (backend !== undefined && capabilities.hardware !== null && backend.backend === null) {
+    lines.push(
+      `ATTENTION — « ${capabilities.hardware} » a été retenu par la détection mais n'est pas ` +
+        'piloté : le transcodage se fera en logiciel.',
     );
   }
 
   const rejected = capabilities.probes.filter((entry) => !entry.ok);
   if (rejected.length > 0) {
-    lines.push('Candidats écartés :');
+    lines.push('Encodeurs écartés, et pourquoi :');
     for (const entry of rejected) {
       lines.push(`  ${entry.encoder} — ${entry.error ?? 'échec'}`);
     }
+  }
+
+  const alsoWorking = capabilities.probes.filter((entry) => entry.ok && entry.name !== capabilities.hardware);
+  if (alsoWorking.length > 0) {
+    lines.push(`Également fonctionnels : ${alsoWorking.map((entry) => entry.encoder).join(', ')}`);
+  }
+
+  /*
+   * Les candidats JAMAIS ESSAYÉS, parce qu'un précédent avait abouti.
+   *
+   * Les taire laisserait croire qu'ils ont échoué, ou qu'ils n'existent pas.
+   * C'est précisément cette zone d'ombre qui a permis à QSV de passer d'échec
+   * silencieux à choix silencieux entre deux versions de ffmpeg.
+   */
+  const tried = new Set(capabilities.probes.map((entry) => entry.name));
+  const untried = CANDIDATES.filter((candidate) => !tried.has(candidate.name));
+  if (untried.length > 0 && capabilities.hardware !== null) {
+    lines.push(
+      `Non essayés, ${capabilities.hardware.toUpperCase()} ayant abouti avant eux : ` +
+        untried.map((candidate) => candidate.encoder).join(', '),
+    );
   }
 
   /*
@@ -578,8 +680,21 @@ export function describeCapabilities(capabilities: FfmpegCapabilities): string[]
 
   const toneRejected = capabilities.toneMapProbes.filter((entry) => !entry.ok);
   if (toneRejected.length > 0) {
-    lines.push('Moteurs de tone mapping écartés :');
+    lines.push('Moteurs de tone mapping écartés, et pourquoi :');
     for (const entry of toneRejected) lines.push(`  ${entry.backend} — ${entry.error ?? 'échec'}`);
+  }
+
+  const toneAlsoWorking = capabilities.toneMapProbes.filter(
+    (entry) => entry.ok && entry.backend !== capabilities.toneMap,
+  );
+  if (toneAlsoWorking.length > 0) {
+    lines.push(`Tone mapping également fonctionnel : ${toneAlsoWorking.map((entry) => entry.backend).join(', ')}`);
+  }
+
+  const toneTried = new Set(capabilities.toneMapProbes.map((entry) => entry.backend));
+  const toneUntried = TONE_MAP_ORDER.filter((backend) => !toneTried.has(backend));
+  if (toneUntried.length > 0 && capabilities.toneMap !== null) {
+    lines.push(`Tone mapping non essayé, ${capabilities.toneMap} ayant abouti avant : ${toneUntried.join(', ')}`);
   }
 
   if (!capabilities.encoders.has('aac')) {

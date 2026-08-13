@@ -35,7 +35,7 @@
  * Les évolutions sont additives et toutes les instructions sont en
  * `IF NOT EXISTS` : rouvrir une base v1 la complète sans rien perdre.
  */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 export const SCHEMA_SQL = `
 -- ---------------------------------------------------------------------------
@@ -225,6 +225,32 @@ CREATE TABLE IF NOT EXISTS playback_progress (
   updated_at       TEXT NOT NULL,
   watched          INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, media_id, media_type)
+);
+
+-- Choix de piste audio et de sous-titres, mémorisés par utilisateur.
+--
+-- On retient une LANGUE, jamais un index de flux : celui-ci ne veut rien dire
+-- d'un fichier à l'autre, alors que « japonais, sous-titres français complets »
+-- traverse toute une série.
+--
+-- Deux portées coexistent. « movie » et « show » portent le choix fait sur une
+-- œuvre — c'est ce qui fait qu'un anime continue en version originale d'un
+-- épisode au suivant. « global » (scope_id = 0) garde le dernier choix fait
+-- n'importe où, et sert de point de départ à une NOUVELLE série.
+--
+-- Pas d'accent grave dans ce commentaire : le schéma vit dans un littéral
+-- gabarit TypeScript, qu'un accent grave refermerait au milieu.
+CREATE TABLE IF NOT EXISTS playback_preference (
+  user_id            INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+  scope_type         TEXT NOT NULL CHECK (scope_type IN ('global', 'movie', 'show')),
+  -- movie.id, show.id, ou 0 pour la portée globale.
+  scope_id           INTEGER NOT NULL,
+  audio_language     TEXT,
+  subtitles_enabled  INTEGER NOT NULL DEFAULT 0,
+  subtitle_language  TEXT,
+  subtitle_kind      TEXT CHECK (subtitle_kind IN ('forced', 'sdh', 'full') OR subtitle_kind IS NULL),
+  updated_at         TEXT NOT NULL,
+  PRIMARY KEY (user_id, scope_type, scope_id)
 );
 
 -- Variantes HLS/CMAF pré-générées, une ligne par définition proposée.

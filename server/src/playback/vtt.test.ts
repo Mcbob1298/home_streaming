@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isConvertible, languageLabel, subtitleLabel, toVtt } from './vtt.js';
+import { convertToVtt, isConvertible, languageLabel, subtitleLabel, toVtt } from './vtt.js';
 
 describe('isConvertible', () => {
   it('accepte SRT et VTT', () => {
@@ -9,10 +9,46 @@ describe('isConvertible', () => {
     expect(isConvertible('.SRT')).toBe(true);
   });
 
-  it('refuse les formats qui demandent un vrai convertisseur', () => {
-    expect(isConvertible('ass')).toBe(false);
-    expect(isConvertible('ssa')).toBe(false);
+  it('accepte désormais ASS, qui a son analyseur', () => {
+    expect(isConvertible('ass')).toBe(true);
+    expect(isConvertible('ssa')).toBe(true);
+  });
+
+  it('accepte les noms de codec de ffmpeg, pas seulement les extensions', () => {
+    // Une piste embarquée arrive avec « subrip » ou « mov_text », jamais « srt ».
+    expect(isConvertible('subrip')).toBe(true);
+    expect(isConvertible('mov_text')).toBe(true);
+  });
+
+  it('refuse les formats image', () => {
     expect(isConvertible('sub')).toBe(false);
+    expect(isConvertible('hdmv_pgs_subtitle')).toBe(false);
+  });
+});
+
+describe('convertToVtt — la porte d’entrée unique', () => {
+  it('aiguille un ASS vers son analyseur', () => {
+    const ass = [
+      '[Events]',
+      'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
+      'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\i1}Texte{\\i0}',
+    ].join('\n');
+
+    expect(convertToVtt(ass, 'ass')).toContain('00:00:01.000 --> 00:00:02.000');
+    expect(convertToVtt(ass, 'ass')).toContain('<i>Texte</i>');
+  });
+
+  it('aiguille un SRT vers la substitution', () => {
+    expect(convertToVtt('1\n00:00:01,000 --> 00:00:02,000\nTexte.\n', 'subrip')).toContain(
+      '00:00:01.000 --> 00:00:02.000',
+    );
+  });
+
+  it('se fie au format annoncé, jamais au contenu', () => {
+    // Deviner marcherait presque toujours, et se tromperait sur un SRT dont la
+    // première réplique commence par un crochet.
+    const piege = '1\n00:00:01,000 --> 00:00:02,000\n[Events] au générique\n';
+    expect(convertToVtt(piege, 'srt')).toContain('[Events] au générique');
   });
 });
 
@@ -72,11 +108,13 @@ describe('toVtt', () => {
 });
 
 describe('languageLabel', () => {
-  it('traduit les codes ISO courants', () => {
+  it('traduit les codes ISO courants, EN FRANÇAIS', () => {
+    // L'interface est en français : « Anglais », pas « English » ni « 日本語 ».
+    // La table est celle de tracks.ts, partagée avec les pistes embarquées.
     expect(languageLabel('fre')).toBe('Français');
     expect(languageLabel('fra')).toBe('Français');
-    expect(languageLabel('eng')).toBe('English');
-    expect(languageLabel('JPN')).toBe('日本語');
+    expect(languageLabel('eng')).toBe('Anglais');
+    expect(languageLabel('JPN')).toBe('Japonais');
   });
 
   it('garde un code inconnu plutôt que d’écrire « inconnue »', () => {
@@ -100,7 +138,7 @@ describe('subtitleLabel', () => {
 
   it('signale les deux mentions', () => {
     expect(subtitleLabel({ language: 'eng', forced: 1, hearingImpaired: 1 })).toBe(
-      'English (forcés, sourds et malentendants)',
+      'Anglais (forcés, sourds et malentendants)',
     );
   });
 });

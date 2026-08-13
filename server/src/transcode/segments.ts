@@ -58,6 +58,79 @@ function round(value: number): number {
   return Number(value.toFixed(3));
 }
 
+// ---------------------------------------------------------------------------
+// Segments audio : une autre horloge que la vidéo
+// ---------------------------------------------------------------------------
+
+/**
+ * Fréquence d'échantillonnage IMPOSÉE à la sortie audio.
+ *
+ * Forcée et non héritée : c'est elle qui rend le découpage calculable. Une
+ * source en 44,1 kHz produirait des trames de durée différente, donc des bornes
+ * de segment qu'on ne saurait plus prédire sans lire le fichier.
+ */
+export const AUDIO_SAMPLE_RATE = 48_000;
+
+/** Une trame AAC-LC fait 1024 échantillons. Ce n'est pas un réglage. */
+export const AAC_FRAME_SAMPLES = 1024;
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * HUIT SECONDES, ET PAS QUATRE. LA RAISON TIENT À UNE DIVISION.
+ *
+ * Le muxer HLS ouvre un segment audio à la première TRAME dont l'horodatage
+ * atteint « k × hls_time ». Une trame dure 1024/48000 s, soit 21,33 ms, et
+ * quatre secondes n'en font pas un compte rond : 187,5. Mesuré sur ffmpeg 9,
+ * un découpage à 4 s produit donc des segments qui alternent 4,010667 s et
+ * 3,989333 s.
+ *
+ * Ce n'est pas gênant tant qu'on lit d'une traite — mais la quantification
+ * n'est PAS additive : quantifier(4) + quantifier(4) = 8,021 alors que
+ * quantifier(8) = 8,000. Après un déplacement, ffmpeg repart d'une horloge
+ * neuve et les bornes réelles s'écartent du manifeste d'une trame par segment,
+ * qui s'accumule.
+ *
+ * Huit secondes font exactement 375 trames. Le découpage est alors exact, et
+ * surtout ADDITIF : reprendre à n'importe quelle borne redonne la même grille.
+ * Vérifié sur ffmpeg 9 — 8.000000 partout, y compris après reprise à 16 s.
+ *
+ * Le coût est nul : un segment audio de 8 s pèse 190 ko et se produit en
+ * quelques dizaines de millisecondes. Le démarrage reste tenu par la vidéo.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+export const AUDIO_SEGMENT_DURATION = 8;
+
+/** En deçà, la queue est absorbée par le segment précédent plutôt que déclarée. */
+const AUDIO_TAIL_MINIMUM = 1;
+
+/**
+ * Découpe audio, calquée sur ce que ffmpeg produit réellement.
+ *
+ * Sous-déclarer est SANS DANGER — un segment produit en trop est simplement
+ * ignoré —, alors que sur-déclarer fait attendre le lecteur sur un fichier qui
+ * n'arrivera jamais. D'où l'absorption de la queue : l'encodeur AAC ajoute
+ * toujours quelques trames de bourrage, et déclarer un segment de 21 ms pour
+ * elles n'apporterait rien.
+ */
+export function planAudioSegments(durationSeconds: number): PlannedSegment[] {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return [];
+
+  const segments: PlannedSegment[] = [];
+  for (let start = 0; start < durationSeconds - 0.001; start += AUDIO_SEGMENT_DURATION) {
+    const duration = Math.min(AUDIO_SEGMENT_DURATION, durationSeconds - start);
+    segments.push({ index: segments.length, start: round(start), duration: round(duration) });
+  }
+
+  const last = segments.at(-1);
+  if (segments.length > 1 && last !== undefined && last.duration < AUDIO_TAIL_MINIMUM) {
+    segments.pop();
+    const previous = segments.at(-1) as PlannedSegment;
+    previous.duration = round(previous.duration + last.duration);
+  }
+
+  return segments;
+}
+
 /** Segment contenant une position donnée. Borné aux extrémités du plan. */
 export function segmentIndexAt(plan: PlannedSegment[], time: number): number {
   if (plan.length === 0) return 0;
@@ -175,3 +248,31 @@ export function segmentFileName(index: number): string {
 /** Motif que ffmpeg remplit lui-même, avec la même convention de nommage. */
 export const SEGMENT_PATTERN = 'seg-%05d.m4s';
 export const INIT_FILE_NAME = 'init.mp4';
+
+/**
+ * Manifeste de sous-titres : UN seul segment couvrant tout le film.
+ *
+ * Un WebVTT complet pèse quelques dizaines de kilo-octets — le découper en
+ * tranches de huit secondes produirait neuf cents fichiers pour rien, et
+ * obligerait à recalculer les horodatages de chaque tranche. Un segment unique
+ * est parfaitement légal en HLS, et c'est ce que font les diffuseurs.
+ *
+ * Pas d'`EXT-X-MAP` ici : le WebVTT n'est pas du fMP4, il n'a pas d'en-tête
+ * séparé.
+ */
+export function buildSubtitlePlaylist(durationSeconds: number, url: string): string {
+  const duration = Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : 0;
+
+  return (
+    [
+      '#EXTM3U',
+      '#EXT-X-VERSION:7',
+      `#EXT-X-TARGETDURATION:${Math.max(1, Math.ceil(duration))}`,
+      '#EXT-X-MEDIA-SEQUENCE:0',
+      '#EXT-X-PLAYLIST-TYPE:VOD',
+      `#EXTINF:${duration.toFixed(6)},`,
+      url,
+      '#EXT-X-ENDLIST',
+    ].join('\n') + '\n'
+  );
+}
