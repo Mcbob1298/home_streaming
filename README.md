@@ -869,13 +869,41 @@ stat -c '%g' /dev/dri/renderD128   # reporter cette valeur dans group_add
 
 ### Interface depuis le poste
 
-```bash
-echo "VITE_API_TARGET=http://192.168.1.15:3001" > web/.env.local
-npm --prefix web run dev
+Créer `web/.env.local` contenant une ligne :
+
+```
+VITE_API_TARGET=http://192.168.1.15:3001
 ```
 
-Sans cette variable, Vite continue de viser `127.0.0.1:3000` — le comportement
-d'avant, utile si le serveur tourne aussi sur le poste.
+puis `npm --prefix web run dev`. Vite annonce sa cible au démarrage — c'est la
+ligne à lire pour savoir à qui l'on parle :
+
+```
+  API et images  →  http://192.168.1.15:3001
+```
+
+Sans le fichier, Vite vise `127.0.0.1:3000` et l'annonce : « (défaut : serveur
+local) ». Utile quand le serveur tourne aussi sur le poste.
+
+> **`echo … > web/.env.local` NE MARCHE PAS sous PowerShell.**
+>
+> La redirection `>` y écrit en **UTF-16**, et `dotenv` lit en UTF-8 : le fichier
+> paraît juste dans un éditeur, et la variable n'est jamais lue. Constaté ici —
+> `ff fe 56 00 49 00 54 00` au lieu de `56 49 54 45`. Sous PowerShell :
+>
+> ```powershell
+> Set-Content web/.env.local 'VITE_API_TARGET=http://192.168.1.15:3001' -Encoding utf8
+> ```
+>
+> Le symptôme est trompeur : l'interface s'affiche normalement, et les chiffres
+> viennent simplement d'un autre serveur.
+
+Deux pièges se cumulaient ici, et le premier masquait le second :
+`vite.config.ts` lisait `process.env.VITE_API_TARGET`, or ce fichier s'exécute
+**avant** que Vite ne charge les `.env` — lesquels alimentent `import.meta.env`
+côté client, pas `process.env` dans la configuration. C'est `loadEnv` qui est
+fait pour cela, avec le répertoire de la configuration et non `process.cwd()` :
+la commande est lancée depuis la racine avec `--prefix web`.
 
 ### Deux configurations qui coexistent
 
