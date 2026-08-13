@@ -20,11 +20,17 @@
  */
 import path from 'node:path';
 
-import { DATA_DIR, loadConfig, loadEnvFile, resolveDatabasePath } from '../config.js';
+import { DATA_DIR, loadConfig, loadEnvFile, resolveDatabasePath, SUBTITLE_CACHE_DIR } from '../config.js';
 import { openDatabase, type Db } from '../db/index.js';
 import { detectCapabilities } from './capabilities.js';
 import { markPending } from './readiness.js';
-import { SubtitlePreparation, enqueueFiles, filesToPrepare, subtitleQueue } from './subtitleQueue.js';
+import {
+  SubtitlePreparation,
+  enqueueFiles,
+  filesToPrepare,
+  requeueMissing,
+  subtitleQueue,
+} from './subtitleQueue.js';
 
 interface Options {
   full: boolean;
@@ -91,7 +97,7 @@ async function main(): Promise<void> {
 
   const config = loadConfig();
   const db = openDatabase(resolveDatabasePath(config));
-  const cacheDir = path.join(DATA_DIR, 'subtitles');
+  const cacheDir = SUBTITLE_CACHE_DIR;
 
   const capabilities = await detectCapabilities({ dataDir: DATA_DIR });
   console.log(`ffmpeg : ${capabilities.version}`);
@@ -104,6 +110,13 @@ async function main(): Promise<void> {
   }
   if (options.retryFailed) console.log(`  ${queue.requeueFailed()} travaux en échec relancés`);
 
+  /*
+   * Le disque a le dernier mot : un travail `done` dont le cache a disparu se
+   * déclarerait à jour indéfiniment. La vérification coûte un `readdir` par
+   * fichier — négligeable devant la passe qu'elle précède.
+   */
+  const rattrapes = requeueMissing(db, cacheDir);
+
   const cibles = filesToPrepare(db);
   const inscrits = enqueueFiles(db, cibles);
   const octetsTotal = cibles.reduce((sum, { file }) => sum + file.sizeBytes, 0);
@@ -111,8 +124,12 @@ async function main(): Promise<void> {
   console.log(`${cibles.length} fichiers présents, ${octets(octetsTotal)} au total.`);
   console.log(
     `  ${inscrits.added} nouveaux, ${inscrits.reactivated} modifiés depuis la dernière passe, ` +
-      `${inscrits.unchanged} déjà à jour\n`,
+      `${inscrits.unchanged} déjà à jour`,
   );
+  if (rattrapes.missing > 0) {
+    console.log(`  ${rattrapes.missing} sans WebVTT sur le disque, remis en file (${octets(rattrapes.bytes)})`);
+  }
+  console.log();
 
   /*
    * La commande emploie la MÊME machine que le serveur : même ordre, même

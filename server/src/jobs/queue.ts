@@ -114,6 +114,49 @@ export class JobQueue {
   }
 
   /**
+   * Remet en attente des cibles PRÉCISES, quelle que soit leur empreinte.
+   *
+   * ───────────────────────────────────────────────────────────────────────────
+   * `enqueue` NE SAIT PAS QUE LE RÉSULTAT A DISPARU.
+   *
+   * Il ne réveille que ce qui a changé, et c'est ce qu'on veut au scan : une
+   * empreinte identique signifie « déjà fait, ne recommence pas ». Mais un
+   * travail `done` dont le produit s'est volatilisé — cache effacé, volume
+   * recréé, extraction partielle — a toujours la bonne empreinte. Il resterait
+   * `done` indéfiniment pendant que le fichier annonce des pistes qu'aucun
+   * disque ne porte.
+   *
+   * Le rattrapage a donc besoin de passer outre : c'est lui qui a regardé le
+   * disque, la file ne le fait jamais.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  requeueTargets(targets: readonly JobTarget[]): number {
+    const insert = this.db.prepare(
+      `INSERT INTO job (queue, target_type, target_id, status, attempts, fingerprint, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)`,
+    );
+    const update = this.db.prepare(
+      `UPDATE job SET status = 'pending', attempts = 0, last_error = NULL, fingerprint = ?, updated_at = ?
+       WHERE queue = ? AND target_type = ? AND target_id = ?`,
+    );
+
+    let count = 0;
+    const now = nowIso();
+
+    const run = this.db.transaction(() => {
+      for (const target of targets) {
+        const fingerprint = target.fingerprint ?? null;
+        const changed = update.run(fingerprint, now, this.name, target.targetType, target.targetId).changes;
+        if (changed === 0) insert.run(this.name, target.targetType, target.targetId, fingerprint, now, now);
+        count += 1;
+      }
+    });
+
+    run();
+    return count;
+  }
+
+  /**
    * Remet en attente les travaux restés `running`.
    *
    * Un travail `running` au démarrage vient forcément d'une passe interrompue

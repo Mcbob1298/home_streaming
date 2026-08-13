@@ -24,6 +24,7 @@ import { mimeTypeFor, type PlaybackDecision } from '../playback/playability.js';
 import { preferenceFor, savePreference } from '../playback/preferences.js';
 import { findMedia as findResolvable, resolveDecision, tracksOf } from '../playback/resolve.js';
 import { preferenceFrom, resolveAudioChoice, resolveSubtitleChoice } from '../playback/tracks.js';
+import { isReady } from '../transcode/readiness.js';
 import { episodeLabel } from '../progress/rules.js';
 import { progressOf } from '../progress/store.js';
 import { currentUserId } from '../progress/user.js';
@@ -356,7 +357,13 @@ export function registerStreamRoutes(
         language: track.language,
       })),
       defaultAudioStream: resolveAudioChoice(tracks.audioRows, preference),
-      embeddedSubtitles: tracks.subtitles.map((track) => ({
+      /*
+       * Une œuvre non préparée n'ANNONCE aucun sous-titre embarqué : ses WebVTT
+       * n'existent pas, et les lister ferait répondre 409 au premier clic. Ça
+       * arrive pour les fichiers antérieurs au verrou, visibles mais pas encore
+       * traités par la passe.
+       */
+      embeddedSubtitles: (isReady(db, file.id) ? tracks.subtitles : []).map((track) => ({
         streamIndex: track.streamIndex,
         label: track.label,
         language: track.language,

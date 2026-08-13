@@ -58,6 +58,48 @@ export function isReady(db: Db, mediaFileId: number): boolean {
 // ---------------------------------------------------------------------------
 
 /**
+ * Instant à partir duquel le verrou s'applique.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * « NE PAS CACHER » ET « LES SOUS-TITRES SONT EXTRAITS » SONT DEUX CHOSES.
+ *
+ * Les confondre a produit un vrai défaut : la reprise de données marquait les
+ * 2 796 fichiers existants comme PRÊTS, donc 2 306 d'entre eux annonçaient des
+ * pistes de sous-titres qui n'existaient sur aucun disque. Ouvrir l'un d'eux
+ * listait des pistes dont le `.vtt` répondait 409.
+ *
+ * `subtitles_fingerprint` ne dit plus qu'UNE chose, et elle est vraie : les
+ * WebVTT de cette version du fichier sont écrits. La préservation de la
+ * bibliothèque existante est devenue ce qu'elle aurait dû être dès le début —
+ * une règle de VISIBILITÉ, pas un mensonge sur l'état.
+ *
+ * Un fichier vu pour la première fois AVANT cet instant reste visible même s'il
+ * n'est pas préparé : il l'a toujours été, et la passe l'enrichit sans le
+ * cacher. Un fichier vu APRÈS n'apparaît que complet.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export const GATE_KEY = 'subtitles_gate_since';
+
+/** L'instant du verrou, ou null quand il n'a jamais été posé. */
+export function gateSince(db: Db): string | null {
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(GATE_KEY) as
+    | { value: string }
+    | undefined;
+  return row?.value ?? null;
+}
+
+/**
+ * Condition SQL « cette œuvre est visible » pour un alias de `media_file`.
+ *
+ * Prête, OU antérieure au verrou. La sous-requête sur `meta` est évaluée par
+ * SQLite une fois par requête, pas une fois par ligne.
+ */
+function visibleSql(alias: string): string {
+  return `(${readySql(alias)} OR ${alias}.first_seen_at < COALESCE(
+     (SELECT value FROM meta WHERE key = '${GATE_KEY}'), '9999'))`;
+}
+
+/**
  * Un film est disponible quand il a AU MOINS un fichier présent et prêt.
  *
  * « Au moins un » et non « tous » : un film en version longue et version cinéma
@@ -65,7 +107,7 @@ export function isReady(db: Db, mediaFileId: number): boolean {
  */
 export const MOVIE_AVAILABLE = `EXISTS (
   SELECT 1 FROM media_file f
-  WHERE f.movie_id = movie.id AND f.present = 1 AND ${readySql('f')}
+  WHERE f.movie_id = movie.id AND f.present = 1 AND ${visibleSql('f')}
 )`;
 
 /**
@@ -81,11 +123,11 @@ export const MOVIE_AVAILABLE = `EXISTS (
 export const SHOW_AVAILABLE = `EXISTS (
   SELECT 1 FROM episode e
   JOIN media_file f ON f.episode_id = e.id AND f.present = 1
-  WHERE e.show_id = show.id AND ${readySql('f')}
+  WHERE e.show_id = show.id AND ${visibleSql('f')}
 )`;
 
 /** Un épisode est disponible aux mêmes conditions qu'un film. */
 export const EPISODE_AVAILABLE = `EXISTS (
   SELECT 1 FROM media_file f
-  WHERE f.episode_id = episode.id AND f.present = 1 AND ${readySql('f')}
+  WHERE f.episode_id = episode.id AND f.present = 1 AND ${visibleSql('f')}
 )`;

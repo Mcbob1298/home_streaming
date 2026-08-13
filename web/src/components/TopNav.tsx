@@ -14,6 +14,7 @@ const NAV = [
   { to: '/library/films', label: 'Films', icon: 'film' },
   { to: '/library/series', label: 'Séries', icon: 'tv' },
   { to: '/genres', label: 'Genres', icon: 'grid' },
+  { to: '/preparation', label: 'Préparation', icon: 'grid' },
 ] as const;
 
 type IconName = (typeof NAV)[number]['icon'];

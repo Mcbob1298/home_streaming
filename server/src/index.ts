@@ -38,6 +38,7 @@ import {
   resolveDatabasePath,
   resolveImagesPath,
   resolveTranscodePath,
+  SUBTITLE_CACHE_DIR,
 } from './config.js';
 import { openDatabase } from './db/index.js';
 
@@ -66,12 +67,7 @@ async function main(): Promise<void> {
   let hardwareReport: FfmpegCapabilities | null = null;
   let preparation: SubtitlePreparation | null = null;
 
-  /*
-   * Le cache de sous-titres vit dans DATA_DIR, a cote de la base, et NON dans le
-   * repertoire de transcodage : celui-ci est efface a chaque demarrage et monte
-   * en tmpfs, alors qu une extraction coute une traversee complete du fichier.
-   */
-  const subtitleCacheDir = path.join(DATA_DIR, 'subtitles');
+  const subtitleCacheDir = SUBTITLE_CACHE_DIR;
 
   registerRoutes(app, db);
   registerProgressRoutes(app, db);

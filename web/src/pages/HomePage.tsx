@@ -2,6 +2,7 @@ import { useQueries, useQuery } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 
 import { api, type MovieSummary, type ShowSummary } from '../api';
+import { useLibraryRefresh, usePreparationStatus, useStableOrder } from '../preparation';
 import { ContinueRow } from '../components/ContinueRow';
 import { Hero, type HeroItem } from '../components/Hero';
 import { MediaRow } from '../components/MediaRow';
@@ -79,6 +80,17 @@ export function HomePage() {
   const series = useQuery({ queryKey: ['shows', 'title'], queryFn: () => api.shows({ sort: 'title' }) });
   const genres = useQuery({ queryKey: ['genres'], queryFn: api.genres });
 
+  /*
+   * Pendant une passe, la bibliothèque se remplit sous les yeux. Deux règles :
+   * on rafraîchit les listes quand le compteur bouge, et on FIGE l'ordre pour
+   * que les arrivants se posent en fin de rangée. « Ajouts récents » est trié
+   * par date décroissante : sans ce gel, un titre prêt s'insérerait en tête et
+   * pousserait toute la rangée sous le curseur.
+   */
+  const preparation = usePreparationStatus();
+  useLibraryRefresh(preparation);
+  const enCours = preparation?.running === true || preparation?.paused === true;
+
   const topGenres = (genres.data ?? []).filter((genre) => genre.movieCount >= 12).slice(0, GENRE_ROWS);
 
   const genreRows = useQueries({
@@ -102,6 +114,16 @@ export function HomePage() {
     if (recent.data === undefined || series.data === undefined) return;
     setHeroItems(pickHero(recent.data.items, series.data.items));
   }, [recent.data, series.data, heroItems.length]);
+
+  /*
+   * Calculés AVANT les retours anticipés : ce sont des hooks, ils ne peuvent pas
+   * vivre après un `return`. Les listes sont vides tant que les données ne sont
+   * pas là, ce qui ne mémorise aucun ordre — le gel ne commence qu'au premier
+   * rendu réel.
+   */
+  const recents = useStableOrder(recent.data?.items ?? [], enCours);
+  const tousFilms = useStableOrder(films.data?.items ?? [], enCours);
+  const toutesSeries = useStableOrder(series.data?.items ?? [], enCours);
 
   const firstError = recent.error ?? films.error ?? series.error;
   if (firstError !== null) return <ErrorMessage error={firstError} />;
@@ -129,12 +151,12 @@ export function HomePage() {
             La rangée se retire d'elle-même quand il n'y a rien à reprendre. */}
         <ContinueRow />
 
-        <MediaRow title="Ajouts récents">{recent.data.items.map(movieTile)}</MediaRow>
+        <MediaRow title="Ajouts récents">{recents.map(movieTile)}</MediaRow>
         <MediaRow title="Films" to="/library/films">
-          {films.data.items.map(movieTile)}
+          {tousFilms.map(movieTile)}
         </MediaRow>
         <MediaRow title="Séries" to="/library/series">
-          {series.data.items.map(showTile)}
+          {toutesSeries.map(showTile)}
         </MediaRow>
 
         {topGenres.map((genre, position) => {

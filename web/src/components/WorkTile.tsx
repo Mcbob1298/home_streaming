@@ -37,6 +37,15 @@ interface TileOptions {
  * ======================================================================== */
 const PLAYABLE_BADGE = 'Lisible';
 
+/**
+ * Mention portée par les œuvres dont les sous-titres se préparent encore.
+ *
+ * Elles n apparaissent PAS au parcours — mais la recherche les renvoie, parce
+ * qu une absence à la recherche se lirait comme un bug de scan. Il faut donc
+ * dire pourquoi on ne peut pas encore les ouvrir.
+ */
+const PREPARING_BADGE = 'En préparation';
+
 function playableBadge(playableFileCount: number): string | null {
   return playableFileCount > 0 ? PLAYABLE_BADGE : null;
 }
@@ -61,9 +70,11 @@ export function MovieTile({ movie, fluid, withBadge }: TileOptions & { movie: Mo
       genres={movie.genres}
       runtimeMinutes={movie.runtime}
       badge={
-        withBadge !== true
-          ? null
-          : (playableBadge(movie.playableFileCount) ?? (isNew(movie.addedAt) ? 'Nouveau' : null))
+        movie.subtitlesReady === 0
+          ? PREPARING_BADGE
+          : withBadge !== true
+            ? null
+            : (playableBadge(movie.playableFileCount) ?? (isNew(movie.addedAt) ? 'Nouveau' : null))
       }
       onPrefetch={() =>
         void queryClient.prefetchQuery({
@@ -80,15 +91,19 @@ export function ShowTile({ show, fluid, withBadge }: TileOptions & { show: ShowS
 
   // « Nouveau » l'emporte sur « Terminée » : c'est l'information la plus utile.
   // « Lisible » l'emporte sur les deux, le temps de la mise au point du lecteur.
+  // La préparation prime sur « Nouveau » et « Terminée » : c est elle qui dit
+  // pourquoi le titre ne s ouvre pas encore.
   const badge =
-    withBadge !== true
-      ? null
-      : (playableBadge(show.playableFileCount) ??
-        (isNew(show.addedAt)
-          ? 'Nouveau'
-          : show.status === 'Ended' || show.status === 'Canceled'
-            ? 'Terminée'
-            : null));
+    show.subtitlesReady === 0
+      ? PREPARING_BADGE
+      : withBadge !== true
+        ? null
+        : (playableBadge(show.playableFileCount) ??
+          (isNew(show.addedAt)
+            ? 'Nouveau'
+            : show.status === 'Ended' || show.status === 'Canceled'
+              ? 'Terminée'
+              : null));
 
   return (
     <MediaTile

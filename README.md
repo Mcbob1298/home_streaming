@@ -638,27 +638,70 @@ et `-ss` avant `-i` sur un flux de sous-titres produit des fichiers vides.
 
 Il n'y a donc pas d'extraction rapide. La seule réponse est de la faire avant.
 
-### Pourquoi la bibliothèque existante est déclarée prête d'office
+### Pourquoi la bibliothèque existante reste visible
 
-`db/index.ts` contient une reprise de données qui, au moment où la colonne
-`media_file.subtitles_fingerprint` apparaît, marque **tous les fichiers déjà
-indexés comme prêts**. Elle ne s'exécute qu'une fois, et cette ligne n'est pas un
-oubli.
-
-Sans elle, le verrou s'appliquerait rétroactivement : les 2 796 fichiers
+Sans précaution, le verrou s'appliquerait rétroactivement : les 2 796 fichiers
 passeraient d'un coup en préparation, et **l'interface serait vide pendant les
 seize heures** de la première passe. Une bibliothèque qui fonctionne depuis des
 semaines deviendrait blanche au redémarrage suivant, pour une fonctionnalité
 censée l'améliorer.
 
-Ces fichiers sont « prêts » au sens où ils l'ont toujours été : sans sous-titres
-embarqués servis, ce qu'ils n'ont jamais eu. `npm run subtitles` les enrichit
-progressivement **sans jamais les cacher**, et le verrou ne joue que pour les
-fichiers vus pour la première fois après la migration — c'est-à-dire exactement
-le cas qu'il est censé couvrir : un film ajouté ce soir n'apparaît que complet.
+**« Ne pas cacher » et « les sous-titres sont extraits » sont deux choses.** Les
+confondre a produit un vrai défaut : une première version marquait les fichiers
+existants comme **prêts**, si bien que 2 306 d'entre eux annonçaient des pistes
+qui n'existaient sur aucun disque — la lecture répondait 409 sur chacune.
+
+La distinction est désormais portée par deux mécanismes séparés :
+
+| | Ce que ça dit | Où |
+|---|---|---|
+| `media_file.subtitles_fingerprint` | les WebVTT de cette version du fichier **sont écrits** | `readiness.ts` |
+| `meta.subtitles_gate_since` | instant à partir duquel le verrou s'applique | `readiness.ts`, `db/index.ts` |
+
+Un fichier vu pour la première fois **avant** cet instant reste visible même s'il
+n'est pas préparé : il l'a toujours été, sans sous-titres embarqués servis — ce
+qu'il n'a jamais eu. Un fichier vu **après** n'apparaît que complet, ce qui est
+exactement le cas que le verrou est censé couvrir : un film ajouté ce soir
+n'apparaît que quand il est prêt.
+
+Le verrou est posé à la première ouverture de base qui n'en trouve pas — pas au
+moment où la colonne est ajoutée. La nuance a compté : sur le NAS la colonne
+existait déjà, le verrou n'était jamais écrit, et `COALESCE(..., '9999')` rendait
+tout visible en permanence sans que rien ne le signale.
 
 Pour l'interprétation stricte — tout cacher jusqu'à la fin de la première
-passe — il suffit de retirer l'appel à `backfill()` dans `openDatabase()`.
+passe — il suffit de supprimer la ligne `subtitles_gate_since` de `meta`.
+
+### « Rechercher ce qui manque » regarde le disque
+
+Le bouton de la page d'administration fait **deux** passes, parce que « manquant »
+a deux sens :
+
+- `enqueueFiles` inscrit ce que la **base** ignore : fichier jamais vu, ou modifié
+  depuis. Il compare des empreintes.
+- `requeueMissing` inscrit ce que le **disque** dément : les fichiers dont il
+  manque au moins un WebVTT.
+
+La seconde est indispensable. Un travail `done` dont le cache a disparu — volume
+recréé, `data/` effacé, extraction à moitié écrite — garde la bonne empreinte : la
+première passe le déclare « déjà à jour ». Sur le NAS, le bouton répondait
+`0 nouveaux, 0 modifiés` là où **1 859 fichiers** (5,32 To) n'avaient aucun
+sous-titre sur le disque.
+
+Deux gardes vont avec :
+
+- une extraction qui sort **sans erreur** mais n'écrit pas tous ses `.vtt` est un
+  **échec**, pas une réussite. Sinon on recrée le défaut d'origine ;
+- le rattrapage **écarte les échecs connus**. Un fichier dont une piste ne
+  produira jamais rien manquera toujours quelque chose : sans cette garde, chaque
+  clic relirait ses 94 Go pour échouer pareil. On les relance depuis la liste des
+  échecs, délibérément.
+
+Les échecs sont lus dans la file, jamais en mémoire : une passe de vingt heures
+redémarre, et la page affichait « aucun échec » pendant que la base en portait
+six. Ces six-là venaient d'ailleurs d'un redémarrage compté comme échec définitif
+— une interruption qui arrive **pendant** le lancement de ffmpeg passe par
+`child.on('error')`, pas par `exit`, et ce chemin ne la reconnaissait pas.
 
 ### Ce que la préparation garantit, et ce qu'elle coûte
 

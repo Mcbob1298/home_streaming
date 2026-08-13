@@ -81,6 +81,19 @@ export const CONFIG_PATH =
 
 export const DATA_DIR = path.join(REPO_ROOT, 'data');
 
+/**
+ * Le cache des sous-titres préparés.
+ *
+ * Dans DATA_DIR, à côté de la base, et NON dans le répertoire de transcodage :
+ * celui-ci est effacé à chaque démarrage et monte en tmpfs, alors qu'une
+ * extraction coûte une traversée complète du fichier.
+ *
+ * Déclaré ici parce que trois entrées y accèdent — le serveur, `npm run
+ * subtitles`, et le rattrapage de la page d'administration. Le même chemin
+ * recalculé à trois endroits est un chemin qui finit par diverger à deux.
+ */
+export const SUBTITLE_CACHE_DIR = path.join(DATA_DIR, 'subtitles');
+
 /** Même résolution que `resolveFromRepoRoot`, utilisable avant sa déclaration. */
 function resolveFromRepoRootEarly(value: string): string {
   return path.isAbsolute(value) ? value : path.resolve(REPO_ROOT, value);

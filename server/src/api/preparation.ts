@@ -12,8 +12,15 @@
  */
 import type { FastifyInstance } from 'fastify';
 
+import { SUBTITLE_CACHE_DIR } from '../config.js';
 import type { Db } from '../db/index.js';
-import { enqueueFiles, filesToPrepare, preparation, subtitleQueue } from '../transcode/subtitleQueue.js';
+import {
+  enqueueFiles,
+  filesToPrepare,
+  preparation,
+  requeueMissing,
+  subtitleQueue,
+} from '../transcode/subtitleQueue.js';
 
 export function registerPreparationRoutes(app: FastifyInstance, db: Db): void {
   // -------------------------------------------------------------------------
@@ -86,12 +93,50 @@ export function registerPreparationRoutes(app: FastifyInstance, db: Db): void {
    * inscrit dans la file ce qui n'y est pas encore. Utile après un scan lancé
    * ailleurs, ou pour rattraper une bibliothèque jamais préparée sans avoir à
    * ouvrir un terminal.
+   *
+   * ───────────────────────────────────────────────────────────────────────────
+   * DEUX PASSES, PARCE QUE « MANQUANT » A DEUX SENS.
+   *
+   * `enqueueFiles` inscrit ce que la BASE ignore : un fichier jamais vu, ou
+   * modifié depuis. Il compare des empreintes, et un travail `done` à empreinte
+   * inchangée lui paraît à jour — même si son cache a disparu.
+   *
+   * `requeueMissing` inscrit ce que le DISQUE dément : les fichiers dont il
+   * manque au moins un WebVTT. C'est la seule vérification qui aille regarder,
+   * et c'est ce que le bouton « Rechercher ce qui manque » promet. Sans elle il
+   * répondait « 0 nouveaux, 0 modifiés » sur une bibliothèque entière restée
+   * sans sous-titres.
+   *
+   * Dans cet ordre : le rattrapage remet des travaux en attente, l'inscription
+   * qui suit les compte alors pour ce qu'ils sont — déjà en file.
+   * ───────────────────────────────────────────────────────────────────────────
    */
   app.post('/api/preparation/enqueue', (_request, reply) => {
+    const rattrapes = requeueMissing(db, SUBTITLE_CACHE_DIR);
     const inscrits = enqueueFiles(db, filesToPrepare(db));
     preparation()?.wake();
 
     void reply.header('Cache-Control', 'no-store');
-    return inscrits;
+    return { ...inscrits, missing: rattrapes.missing, missingBytes: rattrapes.bytes };
+  });
+
+  // -------------------------------------------------------------------------
+  // POST /api/preparation/retry-failed — relancer ce qui a résisté
+  // -------------------------------------------------------------------------
+  /*
+   * La liste des échecs serait sans issue sans ce bouton : le rattrapage les
+   * écarte volontairement — sinon un fichier définitivement impossible ferait
+   * relire ses 94 Go à chaque clic — et il faudrait donc ouvrir un terminal pour
+   * réessayer après avoir corrigé la cause.
+   *
+   * Le geste reste DÉLIBÉRÉ, et c'est la différence : c'est l'utilisateur qui
+   * décide de retenter, pas une boucle automatique.
+   */
+  app.post('/api/preparation/retry-failed', (_request, reply) => {
+    const relances = subtitleQueue(db).requeueFailed();
+    preparation()?.wake();
+
+    void reply.header('Cache-Control', 'no-store');
+    return { retried: relances };
   });
 }

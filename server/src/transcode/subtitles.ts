@@ -240,7 +240,7 @@ export async function extractSubtitles(
 
   const dir = cacheDirOf(cacheRoot, media);
   const already = readyStreams(cacheRoot, media);
-  if (already.size >= tracks.length) return already.size;
+  if (missingTracks(already, tracks).length === 0) return already.size;
 
   let pass = running.get(dir);
   if (pass === undefined) {
@@ -252,6 +252,28 @@ export async function extractSubtitles(
   return readyStreams(cacheRoot, media).size;
 }
 
+interface TrackRow {
+  streamIndex: number;
+  codec: string | null;
+  isImageBased: number;
+}
+
+/**
+ * Le filtre « cette piste, on sait l'extraire », écrit une seule fois.
+ *
+ * Deux appelants s'en servent — une piste retenue ici et pas là, et un fichier
+ * serait déclaré incomplet à jamais parce qu'on attendrait un `.vtt` que la
+ * passe n'écrit pas.
+ */
+function keepExtractable(rows: TrackRow[]): ExtractableTrack[] {
+  return rows
+    .filter(
+      (row): row is TrackRow & { codec: string } =>
+        row.isImageBased === 0 && isExtractable(row.codec) && EXTRACTION[row.codec!.toLowerCase()] !== undefined,
+    )
+    .map((row) => ({ streamIndex: row.streamIndex, codec: row.codec }));
+}
+
 /** Pistes texte extractibles d'un fichier, telles que la base les connaît. */
 export function extractableTracksOf(db: Db, mediaFileId: number): ExtractableTrack[] {
   const rows = db
@@ -259,14 +281,50 @@ export function extractableTracksOf(db: Db, mediaFileId: number): ExtractableTra
       `SELECT stream_index AS streamIndex, codec, is_image_based AS isImageBased
        FROM embedded_subtitle WHERE media_file_id = ? ORDER BY stream_index`,
     )
-    .all(mediaFileId) as { streamIndex: number; codec: string | null; isImageBased: number }[];
+    .all(mediaFileId) as TrackRow[];
 
-  return rows
-    .filter(
-      (row): row is { streamIndex: number; codec: string; isImageBased: number } =>
-        row.isImageBased === 0 && isExtractable(row.codec) && EXTRACTION[row.codec!.toLowerCase()] !== undefined,
+  return keepExtractable(rows);
+}
+
+/**
+ * Toutes les pistes extractibles de la bibliothèque, groupées par fichier.
+ *
+ * Une requête au lieu de trois mille : le rattrapage parcourt la bibliothèque
+ * entière, et il le fait pendant qu'on attend une réponse HTTP.
+ */
+export function extractableTracksByFile(db: Db): Map<number, ExtractableTrack[]> {
+  const rows = db
+    .prepare(
+      `SELECT media_file_id AS mediaFileId, stream_index AS streamIndex, codec,
+              is_image_based AS isImageBased
+       FROM embedded_subtitle ORDER BY media_file_id, stream_index`,
     )
-    .map((row) => ({ streamIndex: row.streamIndex, codec: row.codec }));
+    .all() as (TrackRow & { mediaFileId: number })[];
+
+  const byFile = new Map<number, TrackRow[]>();
+  for (const row of rows) {
+    const list = byFile.get(row.mediaFileId);
+    if (list === undefined) byFile.set(row.mediaFileId, [row]);
+    else list.push(row);
+  }
+
+  const result = new Map<number, ExtractableTrack[]>();
+  for (const [mediaFileId, list] of byFile) {
+    const tracks = keepExtractable(list);
+    if (tracks.length > 0) result.set(mediaFileId, tracks);
+  }
+  return result;
+}
+
+/**
+ * Les pistes dont le WebVTT manque encore.
+ *
+ * Comparaison par INDEX DE FLUX, pas par nombre. Un cache où le `.vtt` de la
+ * piste 3 manque mais où celui d'une piste disparue depuis traîne encore aurait
+ * le bon compte et le mauvais contenu.
+ */
+export function missingTracks(ready: Set<number>, tracks: ExtractableTrack[]): ExtractableTrack[] {
+  return tracks.filter((track) => !ready.has(track.streamIndex));
 }
 
 /**
@@ -341,8 +399,23 @@ async function forgetOtherVersions(cacheRoot: string, mediaFileId: number, keep:
  */
 function run(binary: string, args: string[], signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * UNE INTERRUPTION SE DIT INTERRUPTION, PAR QUELQUE CHEMIN QU'ELLE ARRIVE.
+     *
+     * Trois chemins mènent ici : le signal déjà levé avant le lancement, une
+     * erreur PENDANT le lancement — c'est par là que passe un abort concurrent,
+     * sous le message « The operation was aborted » —, et la sortie du
+     * processus. Seul le dernier reconnaissait l'interruption.
+     *
+     * Les deux autres comptaient un redémarrage de conteneur comme un ÉCHEC
+     * DÉFINITIF : six fichiers s'y étaient accumulés en production, et depuis que
+     * le rattrapage écarte les échecs connus, ils n'auraient plus jamais été
+     * repris.
+     * ─────────────────────────────────────────────────────────────────────────
+     */
     if (signal?.aborted === true) {
-      reject(new Error('extraction annulée avant de démarrer'));
+      reject(new Error(INTERRUPTED));
       return;
     }
 
@@ -355,13 +428,17 @@ function run(binary: string, args: string[], signal?: AbortSignal): Promise<void
 
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      reject(new Error('L’extraction des sous-titres a dépassé cinq minutes. Le partage est-il monté ?'));
+      // Le délai vient de la constante : un message qui annonce cinq minutes
+      // quand le garde-fou en laisse trente envoie chercher le mauvais défaut.
+      const minutes = Math.round(EXTRACTION_TIMEOUT_MS / 60_000);
+      reject(new Error(`L’extraction des sous-titres a dépassé ${minutes} minutes. Le partage est-il monté ?`));
     }, EXTRACTION_TIMEOUT_MS);
     timer.unref();
 
     child.on('error', (error) => {
       clearTimeout(timer);
-      reject(new Error(`ffmpeg n’a pas pu démarrer : ${error.message}`));
+      if (signal?.aborted === true) reject(new Error(INTERRUPTED));
+      else reject(new Error(`ffmpeg n’a pas pu démarrer : ${error.message}`));
     });
 
     child.on('exit', (code, killedBy) => {

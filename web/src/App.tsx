@@ -6,6 +6,7 @@ import { Home } from './pages/Home';
 import { HomePage } from './pages/HomePage';
 import { LibraryPage } from './pages/LibraryPage';
 import { MoviePage } from './pages/MoviePage';
+import { PreparationPage } from './pages/PreparationPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { SearchPage } from './pages/SearchPage';
 import { ShowPage } from './pages/ShowPage';
@@ -71,6 +72,7 @@ function ReadableLayout() {
         <Route path="/bibliotheques" element={<Home />} />
         <Route path="/genres" element={<GenresPage />} />
         <Route path="/review" element={<ReviewPage />} />
+        <Route path="/preparation" element={<PreparationPage />} />
         {/* Page de mise au point du composant vignette, retirée après validation. */}
         <Route path="/demo/vignette" element={<TileDemoPage />} />
         <Route path="*" element={<p className="py-16 text-center text-faible">Page introuvable.</p>} />

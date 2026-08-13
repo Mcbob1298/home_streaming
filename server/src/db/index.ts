@@ -88,14 +88,55 @@ function addMissingColumns(db: Db): string[] {
  * migration.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-function backfill(db: Db, addedColumns: string[]): void {
-  if (!addedColumns.includes('media_file.subtitles_fingerprint')) return;
+function backfill(db: Db, _addedColumns: string[]): void {
+  const gate = db.prepare("SELECT value FROM meta WHERE key = 'subtitles_gate_since'").get() as
+    | { value: string }
+    | undefined;
 
-  db.prepare(
-    `UPDATE media_file
-     SET subtitles_fingerprint = size_bytes || '-' || CAST(mtime_ms AS INTEGER)
-     WHERE subtitles_fingerprint IS NULL`,
-  ).run();
+  /*
+   * Le verrou est posé UNE FOIS, à la première ouverture qui n'en trouve pas.
+   *
+   * PAS conditionné à l'ajout de la colonne : sur une base où celle-ci existait
+   * déjà — cas de toute installation ayant tourné avec la première version — le
+   * verrou n'aurait jamais été écrit, et `visibleSql` serait retombé sur son
+   * repli « tout est visible ». Le rendre inopérant en silence est exactement ce
+   * qu'on cherche à éviter.
+   *
+   * Tout ce qui est déjà indexé lui est antérieur, donc reste visible ; tout ce
+   * qui sera vu ensuite devra être préparé pour apparaître.
+   */
+  if (gate === undefined) {
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('subtitles_gate_since', ?)").run(nowIso());
+  }
+
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * RÉPARATION — une première version de cette reprise mentait.
+   *
+   * Elle marquait les fichiers existants comme PRÊTS pour les préserver du
+   * verrou. Mais « prêt » veut dire « ses WebVTT sont écrits », et ils ne
+   * l'étaient pas : 2 306 fichiers annonçaient des pistes que le serveur
+   * renvoyait en 409. La visibilité passe désormais par la date du verrou, et
+   * l'empreinte redevient ce qu'elle prétend être.
+   *
+   * On ne remet à NULL que ce qui n'a PAS été réellement préparé : la file sait
+   * lesquels, et les extractions déjà faites ne doivent pas être refaites.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  const repaired = db.prepare("SELECT value FROM meta WHERE key = 'subtitles_ready_repaired'").get();
+  if (repaired === undefined) {
+    db.prepare(
+      `UPDATE media_file
+       SET subtitles_fingerprint = NULL
+       WHERE subtitles_fingerprint IS NOT NULL
+         AND EXISTS (SELECT 1 FROM embedded_subtitle s
+                     WHERE s.media_file_id = media_file.id AND s.is_image_based = 0 AND s.codec IS NOT NULL)
+         AND NOT EXISTS (SELECT 1 FROM job j
+                         WHERE j.queue = 'subtitles' AND j.target_type = 'media_file'
+                           AND j.target_id = media_file.id AND j.status = 'done')`,
+    ).run();
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('subtitles_ready_repaired', ?)").run(nowIso());
+  }
 }
 
 export interface LibraryRootRow {

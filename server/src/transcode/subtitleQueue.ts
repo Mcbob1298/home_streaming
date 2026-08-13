@@ -20,8 +20,17 @@
  */
 import type { Db } from '../db/index.js';
 import { JobQueue } from '../jobs/queue.js';
-import { fingerprintOf, markReady } from './readiness.js';
-import { INTERRUPTED, extractSubtitles, extractableTracksOf, type SubtitleSource } from './subtitles.js';
+import { fingerprintOf, markPending, markReady } from './readiness.js';
+import {
+  INTERRUPTED,
+  extractSubtitles,
+  extractableTracksByFile,
+  extractableTracksOf,
+  missingTracks,
+  readyStreams,
+  type ExtractableTrack,
+  type SubtitleSource,
+} from './subtitles.js';
 
 export const SUBTITLE_QUEUE = 'subtitles';
 
@@ -97,6 +106,137 @@ export function enqueueFiles(
   );
 }
 
+/**
+ * Les fichiers dont il MANQUE des WebVTT sur le disque.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * LA SEULE FONCTION QUI VÉRIFIE, AU LIEU DE FAIRE CONFIANCE.
+ *
+ * Tout le reste raisonne sur des empreintes : la file compare celle du travail,
+ * la disponibilité compare celle du fichier. C'est rapide et c'est juste tant
+ * que le cache suit — mais rien ne le garantit. Un volume recréé, un `data/`
+ * effacé, une extraction à moitié écrite, et la base affirme « prêt » pendant
+ * qu'aucun `.vtt` n'existe. C'est précisément ce qui s'était produit : 2 306
+ * fichiers annonçaient des pistes que la lecture renvoyait en 409.
+ *
+ * Elle coûte un `readdir` par fichier — quelques centaines de millisecondes sur
+ * la bibliothèque entière, le cache étant local. C'est pour cela qu'elle n'est
+ * appelée que sur demande explicite, jamais dans une boucle de statut.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export function filesMissingAssets(db: Db, cacheRoot: string): { file: QueuedFile; fingerprint: string }[] {
+  const tracksByFile = extractableTracksByFile(db);
+  if (tracksByFile.size === 0) return [];
+
+  /*
+   * Les échecs connus sont écartés, et c'est ce qui empêche une boucle.
+   *
+   * Un fichier dont une piste ne produira jamais rien manquera toujours quelque
+   * chose : le remettre en file à chaque clic ferait relire ses 94 Go
+   * indéfiniment, pour échouer de la même façon. Il est déjà nommé dans la liste
+   * des échecs — c'est de là qu'on le relance, délibérément.
+   */
+  const echecs = new Set(
+    (
+      db
+        .prepare(
+          `SELECT target_id AS targetId FROM job
+           WHERE queue = ? AND target_type = 'media_file' AND status = 'failed'`,
+        )
+        .all(SUBTITLE_QUEUE) as { targetId: number }[]
+    ).map((row) => row.targetId),
+  );
+
+  const manquants: { file: QueuedFile; fingerprint: string }[] = [];
+
+  for (const { file, fingerprint } of filesToPrepare(db)) {
+    const tracks = tracksByFile.get(file.id);
+    // Sans piste texte, il n'y a rien à trouver sur le disque : rien ne manque.
+    if (tracks === undefined) continue;
+    if (echecs.has(file.id)) continue;
+    if (missingTracks(readyStreams(cacheRoot, file), tracks).length === 0) continue;
+    manquants.push({ file, fingerprint });
+  }
+
+  return manquants;
+}
+
+/** Nombre d'échecs affichés. Au-delà, la liste cesse d'être lisible. */
+const FAILURE_LIMIT = 20;
+
+/**
+ * Les échecs, lus dans la FILE et non dans la mémoire du processus.
+ *
+ * Le nom du fichier vient de la jointure : un identifiant seul n'aide pas à
+ * savoir lequel des 2 796 a résisté.
+ */
+export function recentFailures(db: Db): { mediaFileId: number; fileName: string; error: string }[] {
+  return db
+    .prepare(
+      `SELECT f.id AS mediaFileId, f.file_name AS fileName,
+              COALESCE(j.last_error, 'cause inconnue') AS error
+       FROM job j JOIN media_file f ON f.id = j.target_id
+       WHERE j.queue = ? AND j.target_type = 'media_file' AND j.status = 'failed'
+       ORDER BY j.updated_at DESC
+       LIMIT ?`,
+    )
+    .all(SUBTITLE_QUEUE, FAILURE_LIMIT) as { mediaFileId: number; fileName: string; error: string }[];
+}
+
+/**
+ * Ce qu'une extraction n'a pas produit, dit en une phrase. Null quand tout est là.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * UNE EXTRACTION SANS ERREUR N'EST PAS UNE EXTRACTION RÉUSSIE.
+ *
+ * ffmpeg peut sortir avec le code 0 en n'écrivant rien pour une piste : flux
+ * vide, ASS que la conversion refuse. Déclarer le fichier prêt là-dessus, c'est
+ * reproduire le défaut qu'on vient de corriger — une piste annoncée à la
+ * lecture, un `.vtt` qui répond 409.
+ *
+ * Le message nomme les flux : c'est lui qui s'affiche dans la liste des échecs
+ * de la page d'administration, et « 1 piste sur 3 » n'aide personne à trouver
+ * laquelle.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+export function verdictExtraction(ready: Set<number>, tracks: ExtractableTrack[]): string | null {
+  const absentes = missingTracks(ready, tracks);
+  if (absentes.length === 0) return null;
+
+  const detail = absentes.map((track) => `flux ${track.streamIndex} (${track.codec})`).join(', ');
+  return `${absentes.length} piste(s) sur ${tracks.length} n’ont rien produit : ${detail}.`;
+}
+
+/**
+ * Rattrape ce qui manque : remet en file ET remet en préparation.
+ *
+ * Les deux vont ensemble. Réinscrire le travail sans effacer l'empreinte du
+ * fichier laisserait celui-ci se déclarer prêt et servir des pistes vides
+ * jusqu'à ce que la file y arrive ; effacer l'empreinte sans réinscrire le
+ * travail le rendrait indisponible sans que rien ne le prépare jamais.
+ */
+export function requeueMissing(db: Db, cacheRoot: string): { missing: number; bytes: number } {
+  const manquants = filesMissingAssets(db, cacheRoot);
+
+  const run = db.transaction(() => {
+    for (const { file } of manquants) markPending(db, file.id);
+  });
+  run();
+
+  subtitleQueue(db).requeueTargets(
+    manquants.map(({ file, fingerprint }) => ({
+      targetType: 'media_file' as const,
+      targetId: file.id,
+      fingerprint,
+    })),
+  );
+
+  return {
+    missing: manquants.length,
+    bytes: manquants.reduce((sum, { file }) => sum + file.sizeBytes, 0),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // L'état, tel que la page d'administration le lit
 // ---------------------------------------------------------------------------
@@ -142,7 +282,14 @@ export class SubtitlePreparation {
    * sens selon ce qui reste à traiter.
    */
   private readonly samples = new Map<number, number[]>();
-  private readonly failures: { mediaFileId: number; fileName: string; error: string }[] = [];
+  /*
+   * Les échecs ne sont PAS tenus en mémoire.
+   *
+   * Ils l'étaient, et ils disparaissaient à chaque redémarrage : la page
+   * d'administration affichait « aucun échec » pendant que la base en portait
+   * quatre. Une passe qui dure vingt heures redémarre — c'est même l'un de ses
+   * cas normaux — et la seule liste qui survive doit être celle de la file.
+   */
 
   constructor(
     private readonly db: Db,
@@ -237,12 +384,26 @@ export class SubtitlePreparation {
   status(): PreparationStatus {
     const counts = subtitleQueue(this.db).counts();
 
+    /*
+     * ─────────────────────────────────────────────────────────────────────────
+     * ON NE COMPTE QUE LES OCTETS QU'ON VA RÉELLEMENT LIRE.
+     *
+     * Tous les fichiers présents sont inscrits, mais seuls ceux qui portent une
+     * piste texte sont ouverts par ffmpeg : les autres sont marqués prêts sans
+     * qu'on les touche. Les inclure dans le total gonflait l'avancement de
+     * 5,78 Tio au lieu de 5,13, et surtout faussait le temps restant — il
+     * divisait par le débit des octets qui n'allaient jamais être lus.
+     * ─────────────────────────────────────────────────────────────────────────
+     */
+    const LUS = `EXISTS (SELECT 1 FROM embedded_subtitle s
+                         WHERE s.media_file_id = f.id AND s.is_image_based = 0 AND s.codec IS NOT NULL)`;
+
     const totals = this.db
       .prepare(
         `SELECT COALESCE(SUM(f.size_bytes), 0) AS total,
                 COALESCE(SUM(CASE WHEN j.status IN ('done','skipped') THEN f.size_bytes ELSE 0 END), 0) AS done
          FROM job j JOIN media_file f ON f.id = j.target_id
-         WHERE j.queue = ? AND j.target_type = 'media_file'`,
+         WHERE j.queue = ? AND j.target_type = 'media_file' AND ${LUS}`,
       )
       .get(SUBTITLE_QUEUE) as { total: number; done: number };
 
@@ -251,7 +412,8 @@ export class SubtitlePreparation {
       .prepare(
         `SELECT f.library_root_id AS rootId, COALESCE(SUM(f.size_bytes), 0) AS bytes
          FROM job j JOIN media_file f ON f.id = j.target_id
-         WHERE j.queue = ? AND j.target_type = 'media_file' AND j.status IN ('pending','running')
+         WHERE j.queue = ? AND j.target_type = 'media_file'
+           AND j.status IN ('pending','running') AND ${LUS}
          GROUP BY f.library_root_id`,
       )
       .all(SUBTITLE_QUEUE) as { rootId: number; bytes: number }[];
@@ -283,7 +445,7 @@ export class SubtitlePreparation {
       bytesTotal: totals.total,
       throughput: global.length === 0 ? null : global.reduce((s, v) => s + v, 0) / global.length,
       remainingSeconds,
-      failures: this.failures.slice(-20),
+      failures: recentFailures(this.db),
     };
   }
 
@@ -309,6 +471,24 @@ export class SubtitlePreparation {
         file,
         this.abort.signal,
       );
+
+      /*
+       * ─────────────────────────────────────────────────────────────────────
+       * ON NE DÉCLARE PRÊT QUE CE QUI EST SUR LE DISQUE.
+       *
+       * ffmpeg peut sortir sans erreur en n'écrivant rien pour une piste — flux
+       * vide, ASS que la conversion refuse. Marquer le fichier prêt malgré tout,
+       * c'est reproduire exactement le défaut qu'on vient de corriger : une
+       * piste annoncée à la lecture, un `.vtt` qui répond 409.
+       *
+       * L'échec est bien plus utile : le fichier reste en préparation, il
+       * apparaît nommé dans la liste des échecs, et le rattrapage le laisse
+       * tranquille au lieu de relire ses 94 Go à chaque passage.
+       * ─────────────────────────────────────────────────────────────────────
+       */
+      const manque = verdictExtraction(readyStreams(this.options.cacheDir, file), tracks);
+      if (manque !== null) throw new Error(manque);
+
       markReady(this.db, file.id);
       return count;
     } finally {
@@ -391,7 +571,6 @@ export class SubtitlePreparation {
           }
 
           queue.fail(job.id, message);
-          this.failures.push({ mediaFileId: file.id, fileName: file.fileName, error: message });
           this.options.onLog('préparation en échec', { mediaFileId: file.id, error: message });
         } finally {
           this.current = null;
