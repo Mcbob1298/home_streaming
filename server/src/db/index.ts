@@ -37,7 +37,7 @@ export function openDatabase(databasePath: string, options: { readonly?: boolean
 
   if (options.readonly !== true) {
     db.exec(SCHEMA_SQL);
-    addMissingColumns(db);
+    backfill(db, addMissingColumns(db));
     db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(
       'schema_version',
       String(SCHEMA_VERSION),
@@ -55,12 +55,47 @@ export function openDatabase(databasePath: string, options: { readonly?: boolean
  * Applique les ajouts de colonnes du schéma sur une base existante.
  * SQLite n'a pas d'`ADD COLUMN IF NOT EXISTS` : on inspecte avant d'ajouter.
  */
-function addMissingColumns(db: Db): void {
+/** Rend les colonnes réellement ajoutées, pour les reprises de données qui suivent. */
+function addMissingColumns(db: Db): string[] {
+  const added: string[] = [];
+
   for (const addition of COLUMN_ADDITIONS) {
     const columns = db.prepare(`PRAGMA table_info(${addition.table})`).all() as { name: string }[];
     if (columns.some((column) => column.name === addition.column)) continue;
     db.exec(`ALTER TABLE ${addition.table} ADD COLUMN ${addition.column} ${addition.definition}`);
+    added.push(`${addition.table}.${addition.column}`);
   }
+
+  return added;
+}
+
+/**
+ * Reprises de données jouées UNE FOIS, au moment où leur colonne apparaît.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LA BIBLIOTHÈQUE EXISTANTE EST DÉCLARÉE PRÊTE.
+ *
+ * Un titre dont les sous-titres ne sont pas préparés disparaît des surfaces de
+ * parcours : c'est le principe, et il vaut pour ce qu'on AJOUTE. Appliqué
+ * rétroactivement, il viderait l'interface pendant les seize heures de la
+ * première passe — une bibliothèque qui fonctionne depuis des semaines
+ * deviendrait vide au redémarrage suivant.
+ *
+ * Les fichiers déjà indexés sont donc marqués prêts d'office. Ils le sont au
+ * sens où ils l'ont toujours été : sans sous-titres embarqués servis, ce qu'ils
+ * n'ont jamais eu. « npm run subtitles » les enrichira sans jamais les cacher.
+ * Le verrou ne s'applique qu'aux fichiers vus pour la première fois APRÈS cette
+ * migration.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+function backfill(db: Db, addedColumns: string[]): void {
+  if (!addedColumns.includes('media_file.subtitles_fingerprint')) return;
+
+  db.prepare(
+    `UPDATE media_file
+     SET subtitles_fingerprint = size_bytes || '-' || CAST(mtime_ms AS INTEGER)
+     WHERE subtitles_fingerprint IS NULL`,
+  ).run();
 }
 
 export interface LibraryRootRow {

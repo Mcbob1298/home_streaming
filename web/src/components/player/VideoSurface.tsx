@@ -316,23 +316,20 @@ export function VideoSurface({
       crossOrigin="anonymous"
     >
       {/*
-        Les pistes PRÊTES seulement : un « track » dont la source répond 202
-        resterait vide sans rien dire. Elles apparaissent au fur et à mesure que
-        l'extraction avance, sans que la lecture s'interrompe — ajouter un
-        élément ne touche ni à la source ni au tampon.
+        Toutes les pistes sont servables : si ce titre est proposé, c'est que sa
+        préparation est finie. Le « track » pointe sur un fichier WebVTT déjà
+        écrit, que le serveur renvoie en quelques dizaines de millisecondes.
       */}
-      {embeddedSubtitles
-        .filter((track) => track.ready !== false)
-        .map((track) => (
-          <track
-            key={'e-' + String(track.streamIndex)}
-            id={'e-' + String(track.streamIndex)}
-            kind="subtitles"
-            src={subtitleUrl(mediaFileId, track.streamIndex)}
-            srcLang={track.language ?? 'und'}
-            label={track.label}
-          />
-        ))}
+      {embeddedSubtitles.map((track) => (
+        <track
+          key={'e-' + String(track.streamIndex)}
+          id={'e-' + String(track.streamIndex)}
+          kind="subtitles"
+          src={subtitleUrl(mediaFileId, track.streamIndex)}
+          srcLang={track.language ?? 'und'}
+          label={track.label}
+        />
+      ))}
 
       {subtitles.map((track) => (
         <track

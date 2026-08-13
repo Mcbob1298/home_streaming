@@ -1,29 +1,30 @@
 /**
- * `npm run subtitles` — passe de préchauffage des sous-titres.
+ * `npm run subtitles` — la passe de préparation.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * PRÉPARER À L'AVANCE CE QU'ON CALCULERAIT À LA DEMANDE.
+ * L'ASSET EXISTE AVANT LE TITRE.
  *
- * Une extraction traverse le fichier entier : plus de cinq minutes sur un remux
- * 4K servi par SMB. Faite pendant que personne ne regarde, elle ne coûte rien à
- * personne ; faite au moment où quelqu'un lance la lecture, elle est un défaut.
+ * Une extraction traverse le fichier entier : mesuré à 965 s sur un remux de
+ * 94 Go, soit exactement le débit du disque. Faite pendant que personne ne
+ * regarde, elle ne coûte rien ; faite au moment du clic sur « Lire », elle est
+ * un défaut. Cette passe la fait une fois pour toute la bibliothèque.
  *
- * Cette passe la fait pour toute la bibliothèque, une fois. Ensuite, ouvrir
- * n'importe quel fichier trouve ses sous-titres déjà prêts.
+ * Compter environ seize heures pour 5,13 Tio. C'est un coût unique, à lancer une
+ * nuit. Elle est reprenable : Ctrl-C et relance repartent là où on s'est arrêté.
  * ─────────────────────────────────────────────────────────────────────────────
  *
- *   npm run subtitles              reprend là où la passe précédente s'est arrêtée
- *   npm run subtitles -- --full    tout refaire, cache compris
+ *   npm run subtitles                  reprend là où on en était
+ *   npm run subtitles -- --full        tout refaire, cache compris
  *   npm run subtitles -- --retry-failed
  *   npm run subtitles -- --limit 50
  */
 import path from 'node:path';
 
 import { DATA_DIR, loadConfig, loadEnvFile, resolveDatabasePath } from '../config.js';
-import { openDatabase } from '../db/index.js';
+import { openDatabase, type Db } from '../db/index.js';
 import { detectCapabilities } from './capabilities.js';
-import { extractSubtitles, readyStreams, type SubtitleSource } from './subtitles.js';
-import { filesWithTextSubtitles, subtitleQueue, subtitleSourceOf } from './subtitleQueue.js';
+import { markPending } from './readiness.js';
+import { SubtitlePreparation, enqueueFiles, filesToPrepare, subtitleQueue } from './subtitleQueue.js';
 
 interface Options {
   full: boolean;
@@ -47,17 +48,18 @@ function parseOptions(argv: string[]): Options {
 }
 
 /** « 3 h 12 min 04 s », pour une passe qui dure des heures. */
-function duree(ms: number): string {
-  const total = Math.round(ms / 1000);
+export function duree(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
-  if (h > 0) return `${h} h ${String(m).padStart(2, '0')} min ${String(s).padStart(2, '0')} s`;
+  if (h > 0) return `${h} h ${String(m).padStart(2, '0')} min`;
   if (m > 0) return `${m} min ${String(s).padStart(2, '0')} s`;
   return `${s} s`;
 }
 
-function octets(bytes: number): string {
+export function octets(bytes: number): string {
+  if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(2)} Tio`;
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} Go`;
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} Mo`;
   return `${Math.round(bytes / 1024)} Ko`;
@@ -70,13 +72,17 @@ async function tailleDuCache(dir: string): Promise<number> {
   try {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) total += await tailleDuCache(full);
-      else total += (await stat(full)).size;
+      total += entry.isDirectory() ? await tailleDuCache(full) : (await stat(full)).size;
     }
   } catch {
     // Cache absent : zéro.
   }
   return total;
+}
+
+/** `--full` : tout refaire, donc tout remettre en préparation. */
+function reinitialiser(db: Db): void {
+  db.prepare('UPDATE media_file SET subtitles_fingerprint = NULL WHERE present = 1').run();
 }
 
 async function main(): Promise<void> {
@@ -91,81 +97,81 @@ async function main(): Promise<void> {
   console.log(`ffmpeg : ${capabilities.version}`);
   console.log(`Cache  : ${cacheDir}\n`);
 
-  const cibles = filesWithTextSubtitles(db);
-  console.log(`${cibles.length} fichiers portent des sous-titres texte embarqués.`);
-
   const queue = subtitleQueue(db);
-  if (options.full) console.log(`  ${queue.requeueAll()} travaux remis en attente (--full)`);
+  if (options.full) {
+    reinitialiser(db);
+    console.log(`  ${queue.requeueAll()} travaux remis en attente (--full)`);
+  }
   if (options.retryFailed) console.log(`  ${queue.requeueFailed()} travaux en échec relancés`);
-  queue.requeueStale();
 
-  const inscrits = queue.enqueue(
-    cibles.map(({ source, fingerprint }) => ({
-      targetType: 'media_file' as const,
-      targetId: source.id,
-      fingerprint,
-    })),
-  );
+  const cibles = filesToPrepare(db);
+  const inscrits = enqueueFiles(db, cibles);
+  const octetsTotal = cibles.reduce((sum, { file }) => sum + file.sizeBytes, 0);
+
+  console.log(`${cibles.length} fichiers présents, ${octets(octetsTotal)} au total.`);
   console.log(
     `  ${inscrits.added} nouveaux, ${inscrits.reactivated} modifiés depuis la dernière passe, ` +
       `${inscrits.unchanged} déjà à jour\n`,
   );
 
+  /*
+   * La commande emploie la MÊME machine que le serveur : même ordre, même
+   * marquage, même comptabilité. Écrire deux fois la boucle de traitement, c'est
+   * garantir qu'elles divergeront.
+   */
+  const passe = new SubtitlePreparation(db, {
+    ffmpegBinary: capabilities.binary,
+    cacheDir,
+    onLog: (message, details) => {
+      const id = details?.mediaFileId;
+      if (message === 'sous-titres préparés') {
+        const etat = passe.status();
+        const reste = etat.remainingSeconds === null ? '—' : duree(etat.remainingSeconds * 1000);
+        console.log(
+          `  [${etat.filesDone}/${etat.filesTotal}] #${String(id)} — ${String(details?.pistes)} piste(s) ` +
+            `en ${String(details?.secondes)} s · ${octets(etat.bytesDone)} / ${octets(etat.bytesTotal)} · ` +
+            `reste ~${reste}`,
+        );
+      } else if (message === 'préparation en échec') {
+        console.log(`  #${String(id)} — ÉCHEC : ${String(details?.error)}`);
+      }
+    },
+  });
+
   const debut = Date.now();
   let traites = 0;
-  let pistes = 0;
-  let echecs = 0;
-  let ignores = 0;
+
+  // Ctrl-C rend le disque proprement : la passe s'arrête, la file garde sa place.
+  process.on('SIGINT', () => {
+    console.log('\nInterruption — la passe reprendra où elle en est au prochain lancement.');
+    passe.pause();
+    setTimeout(() => process.exit(0), 500);
+  });
 
   for (;;) {
     if (options.limit !== null && traites >= options.limit) break;
-
-    const [job] = queue.claim(1);
-    if (job === undefined) break;
-
-    const source: SubtitleSource | undefined = subtitleSourceOf(db, job.target_id);
-    if (source === undefined) {
-      queue.skip(job.id, 'fichier absent de l’index ou disparu du disque');
-      ignores += 1;
-      continue;
-    }
-
-    const avant = readyStreams(cacheDir, source).size;
-    const t0 = Date.now();
-
-    try {
-      const total = await extractSubtitles(db, capabilities.binary, cacheDir, source);
-      queue.complete(job.id);
-      traites += 1;
-      pistes += total - avant;
-
-      const restants = queue.counts().pending;
-      console.log(
-        `  [${traites}] #${source.id} — ${total} piste(s) en ${duree(Date.now() - t0)}` +
-          ` · ${restants} en attente`,
-      );
-    } catch (error) {
-      queue.fail(job.id, (error as Error).message);
-      echecs += 1;
-      console.log(`  [${traites}] #${source.id} — ÉCHEC : ${(error as Error).message}`);
-    }
+    const avant = passe.status().filesDone;
+    await passe.runOnce();
+    const apres = passe.status().filesDone;
+    if (apres === avant) break;
+    traites += apres - avant;
   }
 
   const total = Date.now() - debut;
   const taille = await tailleDuCache(cacheDir);
   const counts = queue.counts();
+  const etat = passe.status();
 
   console.log('\n──────────────────────────────────────────────');
   console.log(`Fichiers traités   : ${traites}`);
-  console.log(`Pistes produites   : ${pistes}`);
-  console.log(`Échecs             : ${echecs}`);
-  console.log(`Ignorés            : ${ignores}`);
   console.log(`Durée totale       : ${duree(total)}`);
-  if (traites > 0) console.log(`Moyenne par fichier: ${duree(total / traites)}`);
+  console.log(`Volume lu          : ${octets(etat.bytesDone)}`);
+  if (etat.throughput !== null) console.log(`Débit observé      : ${octets(etat.throughput)}/s`);
   console.log(`Volume du cache    : ${octets(taille)}`);
   console.log(`Reste en attente   : ${counts.pending}`);
   if (counts.failed > 0) {
     console.log(`\n${counts.failed} en échec — « npm run subtitles -- --retry-failed » pour réessayer.`);
+    for (const echec of etat.failures) console.log(`  ${echec.fileName} — ${echec.error}`);
   }
 
   db.close();
@@ -175,3 +181,5 @@ void main().catch((error: unknown) => {
   console.error((error as Error).message);
   process.exit(1);
 });
+
+export { markPending };

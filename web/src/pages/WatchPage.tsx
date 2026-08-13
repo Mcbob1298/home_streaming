@@ -407,31 +407,14 @@ function Player({ data, startAt }: { data: Playability; startAt: number }) {
   useProgressReporting(data.mediaFileId, video, onWatched);
 
   /*
-   * ───────────────────────────────────────────────────────────────────────────
-   * LES SOUS-TITRES ARRIVENT PENDANT LA LECTURE.
+   * Les sous-titres sont PRÊTS, sinon ce titre ne serait pas proposé.
    *
-   * Une extraction traverse le fichier entier — plus de cinq minutes sur un
-   * remux 4K. La lecture n'attend pas : elle démarre sans sous-titres, et on
-   * interroge l'état toutes les cinq secondes tant qu'il en reste à produire.
-   * La requête ne lit qu'un répertoire, elle ne coûte rien.
-   *
-   * L'interrogation s'arrête d'elle-même dès que tout est prêt.
-   * ───────────────────────────────────────────────────────────────────────────
+   * C'est tout ce que le modèle achète : plus d'interrogation périodique, plus
+   * d'état « préparation en cours », plus de piste grisée. Le lecteur reçoit une
+   * liste et des fichiers, comme pour un sous-titre externe.
    */
-  const readiness = useQuery({
-    queryKey: ['subtitles', data.mediaFileId],
-    queryFn: () => api.subtitleReadiness(data.mediaFileId),
-    refetchInterval: (query) => (query.state.data?.preparing === true ? 5000 : false),
-    // L'état initial vient de playability : on ne repart pas d'une liste vide.
-    initialData: {
-      tracks: data.embeddedSubtitles.map((track) => ({ ...track, ready: false })),
-      preparing: data.embeddedSubtitles.length > 0,
-      imageOnlySubtitles: data.imageOnlySubtitles,
-    },
-  });
+  const embeddedSubtitles = data.embeddedSubtitles;
 
-  const embeddedSubtitles = readiness.data.tracks;
-  const preparingSubtitles = readiness.data.preparing;
 
   /*
    * Tout changement de piste est mémorisé aussitôt, sans attendre la fin de la
@@ -554,7 +537,6 @@ function Player({ data, startAt }: { data: Playability; startAt: number }) {
         subtitles={data.subtitles}
         embeddedSubtitles={embeddedSubtitles}
         imageOnlySubtitles={data.imageOnlySubtitles}
-        preparingSubtitles={preparingSubtitles}
         subtitleChoice={subtitle}
         audioTracks={data.audioTracks}
         audioStream={audioStream}

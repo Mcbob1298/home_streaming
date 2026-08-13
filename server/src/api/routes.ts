@@ -13,6 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Db } from '../db/index.js';
 import { buildSrcSet, defaultImagePath, type ImageKind } from '../metadata/images.js';
 import { directPlaySql } from '../playback/playability.js';
+import { MOVIE_AVAILABLE, SHOW_AVAILABLE, readySql } from '../transcode/readiness.js';
 import { fileSummaryOf, type WorkType } from './fileSummary.js';
 import {
   buildOrderBy,
@@ -115,14 +116,26 @@ function directPlayExists(table: 'movie' | 'show'): string {
                WHERE e.show_id = show.id AND ${directPlaySql('f')})`;
 }
 
+/**
+ * L'état de préparation, porté par chaque ligne.
+ *
+ * La recherche et les fiches ne FILTRENT pas, elles MARQUENT : il leur faut donc
+ * savoir, pour chaque œuvre, si elle est ouvrable. Calculé dans la même requête
+ * plutôt qu'en interrogeant ligne à ligne.
+ */
+const CHAMP_MOVIE = `(CASE WHEN ${MOVIE_AVAILABLE} THEN 1 ELSE 0 END) AS subtitlesReady`;
+const CHAMP_SHOW = `(CASE WHEN ${SHOW_AVAILABLE} THEN 1 ELSE 0 END) AS subtitlesReady`;
+
 /** Colonne « combien de ses fichiers sont directement lisibles ». */
 function directPlayCount(table: 'movie' | 'show'): string {
   return table === 'movie'
     ? `(SELECT COUNT(*) FROM media_file f
-        WHERE f.movie_id = movie.id AND f.present = 1 AND ${directPlaySql('f')}) AS playableFileCount`
+        WHERE f.movie_id = movie.id AND f.present = 1 AND ${directPlaySql('f')}) AS playableFileCount,
+       ${CHAMP_MOVIE}`
     : `(SELECT COUNT(*) FROM episode e
         JOIN media_file f ON f.episode_id = e.id AND f.present = 1
-        WHERE e.show_id = show.id AND ${directPlaySql('f')}) AS playableFileCount`;
+        WHERE e.show_id = show.id AND ${directPlaySql('f')}) AS playableFileCount,
+       ${CHAMP_SHOW}`;
 }
 
 /** `?playable=direct` — seule valeur reconnue, tout le reste ne filtre rien. */
@@ -224,6 +237,28 @@ const SHOW_HAS_FILE = `EXISTS (
   WHERE e.show_id = show.id
 )`;
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * CE QU'ON CACHE PENDANT LA PRÉPARATION, ET CE QU'ON NE CACHE PAS.
+ *
+ * Un titre dont les sous-titres ne sont pas préparés n'est pas proposé : on ne
+ * met pas au catalogue ce qu'on ne peut pas servir en entier. Mais l'absence a
+ * deux angles morts, et les traiter n'est pas une concession :
+ *
+ * • LA RECHERCHE. Il sait ce qu'il a ajouté hier soir. Ne pas le trouver en le
+ *   cherchant par son nom ne se lit pas « pas encore prêt » mais « le scan l'a
+ *   raté ». Une absence qui ressemble à un bug n'est pas une bonne absence.
+ * • L'ACCÈS DIRECT à une fiche, qui répond toujours, avec « Lire » désactivé.
+ *   Un 404 sur une œuvre qui existe serait faux.
+ *
+ * Le parcours applique donc le filtre ; la recherche et les fiches ne
+ * l'appliquent pas et MARQUENT l'état à la place.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+function browseWhere(hasFile: string, available: string, isSearching: boolean): string[] {
+  return isSearching ? [hasFile] : [hasFile, available];
+}
+
 export function registerRoutes(app: FastifyInstance, db: Db): void {
   // -------------------------------------------------------------------------
   // GET /api/libraries
@@ -252,7 +287,7 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
     const order = readOrder(query.order, sort);
     const search = buildSearchClause(readString(query.search));
 
-    const where = [MOVIE_HAS_FILE];
+    const where = browseWhere(MOVIE_HAS_FILE, MOVIE_AVAILABLE, search.sql !== '');
     const parameters: unknown[] = [];
     if (libraryId !== null) {
       where.push('library_id = ?');
@@ -337,7 +372,7 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
     const order = readOrder(query.order, sort);
     const search = buildSearchClause(readString(query.search));
 
-    const where = [SHOW_HAS_FILE];
+    const where = browseWhere(SHOW_HAS_FILE, SHOW_AVAILABLE, search.sql !== '');
     const parameters: unknown[] = [];
     if (libraryId !== null) {
       where.push('library_id = ?');
@@ -440,6 +475,12 @@ export function registerRoutes(app: FastifyInstance, db: Db): void {
                   -- identifiant, donc le premier vu au scan : sur un épisode
                   -- présent en deux versions, il en faut bien un.
                   MIN(f.id) AS mediaFileId,
+                  /*
+                   * Une série n'est jamais masquée pour un épisode : c'est
+                   * l'épisode que la grille marque, et lui seul qu'on ne peut
+                   * pas ouvrir tant que sa préparation n'est pas finie.
+                   */
+                  MAX(CASE WHEN ${readySql('f')} THEN 1 ELSE 0 END) AS subtitlesReady,
                   MAX(CASE WHEN ${directPlaySql('f')} THEN 1 ELSE 0 END) AS playableDirect
            FROM episode e
            JOIN media_file f ON f.episode_id = e.id AND f.present = 1

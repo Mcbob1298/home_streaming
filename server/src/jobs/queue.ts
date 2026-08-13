@@ -127,6 +127,24 @@ export class JobQueue {
     return result.changes;
   }
 
+  /**
+   * Remet UN travail en attente, sans le compter en échec.
+   *
+   * Pour une interruption VOLONTAIRE — une passe mise en pause pour rendre le
+   * disque. Le travail n'a pas échoué, il n'a pas fini : le compter en échec
+   * gonflerait le rapport et demanderait un `--retry-failed` pour rien. Le
+   * compteur d'essais est décrémenté d'autant, sinon une pause répétée finirait
+   * par ressembler à un fichier qui résiste.
+   */
+  requeueOne(jobId: number): void {
+    this.db
+      .prepare(
+        `UPDATE job SET status = 'pending', attempts = MAX(0, attempts - 1), updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(nowIso(), jobId);
+  }
+
   /** Remet en attente les travaux en échec, pour un nouvel essai (`--retry-failed`). */
   requeueFailed(): number {
     const result = this.db

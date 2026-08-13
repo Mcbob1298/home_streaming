@@ -43,6 +43,14 @@ export interface MovieSummary {
   fileCount: number;
   /** TEMPORAIRE — nombre de fichiers lisibles sans transcodage. Voir ListParams. */
   playableFileCount: number;
+  /**
+   * Les sous-titres sont-ils préparés ?
+   *
+   * Les surfaces de parcours ne renvoient que des œuvres prêtes. La RECHERCHE,
+   * elle, renvoie tout et marque : ne pas trouver un film qu'on vient d'ajouter
+   * se lirait comme un bug de scan, pas comme une attente.
+   */
+  subtitlesReady: number;
 }
 
 export interface ShowSummary {
@@ -65,6 +73,8 @@ export interface ShowSummary {
   episodeCount: number;
   /** TEMPORAIRE — nombre d'épisodes lisibles sans transcodage. Voir ListParams. */
   playableFileCount: number;
+  /** Une série est prête dès qu'UN épisode l'est : c'est l'épisode qu'on marque. */
+  subtitlesReady: number;
 }
 
 export interface SubtitleInfo {
@@ -192,6 +202,8 @@ export interface EpisodeSummary {
   mediaFileId: number;
   /** TEMPORAIRE — 1 si l'épisode part tel quel dans un navigateur. */
   playableDirect: number;
+  /** 0 tant que ses sous-titres se préparent. La grille le marque, la série reste visible. */
+  subtitlesReady: number;
 }
 
 export interface SeasonDetail {
@@ -293,22 +305,6 @@ export interface TrackOption {
 
 export interface SubtitleOption extends TrackOption {
   kind: 'forced' | 'sdh' | 'full';
-  /**
-   * Le WebVTT est-il extrait et servable ?
-   *
-   * Une extraction traverse le fichier entier — plus de cinq minutes sur un
-   * remux 4K. La lecture démarre sans attendre, et les pistes deviennent
-   * disponibles au fur et à mesure.
-   */
-  ready?: boolean;
-}
-
-/** Ce que le sélecteur affiche pendant qu'une extraction tourne. */
-export interface SubtitleReadiness {
-  tracks: (SubtitleOption & { ready: boolean })[];
-  /** Vrai tant qu'il reste des pistes à produire. */
-  preparing: boolean;
-  imageOnlySubtitles: boolean;
 }
 
 export interface Playability {
@@ -518,10 +514,6 @@ export const api = {
 
   progressOf: (mediaType: MediaType, mediaId: number | string) =>
     getJson<ProgressSnapshot>(`/api/progress/${mediaType}/${mediaId}`),
-
-  /** État d'extraction des sous-titres embarqués, interrogé pendant la préparation. */
-  subtitleReadiness: (mediaFileId: number | string) =>
-    getJson<SubtitleReadiness>(`/api/stream/${mediaFileId}/subtitles`),
 
   /** Progression de tous les épisodes d'une série, et son point de reprise. */
   showProgress: (showId: number | string) => getJson<ShowProgress>(`/api/progress/show/${showId}`),

@@ -49,6 +49,9 @@ export const AUDIO_BITRATE_BPS = 192_000;
  */
 const EXTRACTION_TIMEOUT_MS = 1_800_000;
 
+/** Message d'une interruption volontaire, reconnu par la file pour ne pas la compter en échec. */
+export const INTERRUPTED = 'extraction interrompue';
+
 /**
  * Comment sortir chaque codec, et sous quelle forme le relire.
  *
@@ -141,8 +144,14 @@ export type SubtitleResult =
   | { kind: 'ok'; vtt: string }
   /** La piste n'existe pas, ou n'est pas du texte extractible. */
   | { kind: 'unknown' }
-  /** L'extraction est en cours ou en attente : la piste arrivera. */
-  | { kind: 'preparing' }
+  /**
+   * Le fichier n'a pas été préparé.
+   *
+   * Ne devrait pas arriver : un titre non préparé n'est pas proposé à la
+   * lecture. Si ça arrive quand même — cache effacé à la main, fichier remplacé
+   * entre l'affichage et le clic — on le DIT au lieu de faire attendre.
+   */
+  | { kind: 'absent' }
   | { kind: 'failed'; reason: string };
 
 /**
@@ -187,16 +196,15 @@ export function readyStreams(cacheRoot: string, media: SubtitleSource): Set<numb
 }
 
 /**
- * Le WebVTT d'une piste, s'il est déjà extrait.
+ * Le WebVTT d'une piste, lu dans le cache.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * CETTE FONCTION N'EXTRAIT JAMAIS. ELLE LIT, OU ELLE DIT QUE ÇA ARRIVE.
+ * CETTE FONCTION N'EXTRAIT JAMAIS. ELLE LIT UN FICHIER, RIEN DE PLUS.
  *
- * L'extraction traverse le fichier entier : mesurée à plus de cinq minutes sur
- * un remux 4K servi par SMB. Personne n'attend cinq minutes devant un lecteur,
- * et une requête HTTP qui dure cinq minutes n'est pas une requête, c'est une
- * panne. La lecture démarre donc sans sous-titres, l'extraction part dans la
- * file persistée, et les pistes apparaissent au fur et à mesure.
+ * C'est tout l'objet du modèle : la préparation a eu lieu avant que le titre ne
+ * soit proposé. Servir un sous-titre coûte donc une lecture de fichier — des
+ * dizaines de millisecondes — et non les seize minutes d'une traversée de
+ * conteneur.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 export async function readSubtitleTrack(
@@ -211,7 +219,7 @@ export async function readSubtitleTrack(
   const cached = path.join(cacheDirOf(cacheRoot, media), `${streamIndex}.vtt`);
   if (existsSync(cached)) return { kind: 'ok', vtt: await readFile(cached, 'utf8') };
 
-  return { kind: 'preparing' };
+  return { kind: 'absent' };
 }
 
 /**
@@ -225,6 +233,7 @@ export async function extractSubtitles(
   ffmpegBinary: string,
   cacheRoot: string,
   media: SubtitleSource,
+  signal?: AbortSignal,
 ): Promise<number> {
   const tracks = extractableTracksOf(db, media.id);
   if (tracks.length === 0) return 0;
@@ -235,7 +244,7 @@ export async function extractSubtitles(
 
   let pass = running.get(dir);
   if (pass === undefined) {
-    pass = extractAll(ffmpegBinary, media, tracks, cacheRoot, dir).finally(() => running.delete(dir));
+    pass = extractAll(ffmpegBinary, media, tracks, cacheRoot, dir, signal).finally(() => running.delete(dir));
     running.set(dir, pass);
   }
   await pass;
@@ -273,13 +282,14 @@ async function extractAll(
   tracks: ExtractableTrack[],
   cacheRoot: string,
   dir: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const staging = `${dir}.partiel`;
   await rm(staging, { recursive: true, force: true }).catch(() => undefined);
   await mkdir(staging, { recursive: true });
 
   const input = media.rawPath ?? media.path;
-  await run(ffmpegBinary, buildExtractArgs(input, tracks, staging));
+  await run(ffmpegBinary, buildExtractArgs(input, tracks, staging), signal);
 
   for (const track of tracks) {
     const raw = rawFileName(track);
@@ -322,9 +332,21 @@ async function forgetOtherVersions(cacheRoot: string, mediaFileId: number, keep:
   }
 }
 
-function run(binary: string, args: string[]): Promise<void> {
+/**
+ * Lance ffmpeg, et le TUE si le signal est déclenché.
+ *
+ * C'est ce qui permet de rendre le disque en un clic : mettre la passe en pause
+ * doit arrêter la lecture en cours, pas attendre qu'elle finisse. Node transmet
+ * le signal au processus enfant, qui reçoit SIGTERM.
+ */
+function run(binary: string, args: string[], signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    if (signal?.aborted === true) {
+      reject(new Error('extraction annulée avant de démarrer'));
+      return;
+    }
+
+    const child = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'], signal });
 
     let stderr = '';
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -342,9 +364,10 @@ function run(binary: string, args: string[]): Promise<void> {
       reject(new Error(`ffmpeg n’a pas pu démarrer : ${error.message}`));
     });
 
-    child.on('exit', (code) => {
+    child.on('exit', (code, killedBy) => {
       clearTimeout(timer);
       if (code === 0) resolve();
+      else if (signal?.aborted === true || killedBy !== null) reject(new Error(INTERRUPTED));
       else reject(new Error(stderr.trim().split('\n').at(-1) ?? `ffmpeg a quitté avec le code ${code}`));
     });
   });

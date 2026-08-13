@@ -14,6 +14,7 @@ import fastifyStatic from '@fastify/static';
 import Fastify from 'fastify';
 
 import { registerHlsRoutes } from './api/hls.js';
+import { registerPreparationRoutes } from './api/preparation.js';
 import { registerProgressRoutes } from './api/progress.js';
 import { registerReviewRoutes } from './api/review.js';
 import { registerRoutes } from './api/routes.js';
@@ -22,7 +23,7 @@ import { ImageDownloader } from './metadata/images.js';
 import { TmdbClient } from './metadata/tmdb.js';
 import type { EnrichContext } from './metadata/enrich.js';
 import { SessionManager } from './transcode/manager.js';
-import { SubtitleWorker, setSubtitleWorker } from './transcode/subtitleQueue.js';
+import { SubtitlePreparation, setPreparation } from './transcode/subtitleQueue.js';
 import {
   describeCapabilities,
   detectCapabilities,
@@ -63,7 +64,7 @@ async function main(): Promise<void> {
    */
   let sessionManager: SessionManager | null = null;
   let hardwareReport: FfmpegCapabilities | null = null;
-  let subtitleWorker: SubtitleWorker | null = null;
+  let preparation: SubtitlePreparation | null = null;
 
   /*
    * Le cache de sous-titres vit dans DATA_DIR, a cote de la base, et NON dans le
@@ -74,12 +75,11 @@ async function main(): Promise<void> {
 
   registerRoutes(app, db);
   registerProgressRoutes(app, db);
-  registerStreamRoutes(
-    app,
-    db,
-    () => ({ available: sessionManager !== null, ffmpegBinary: hardwareReport?.binary ?? 'ffmpeg' }),
-    () => subtitleCacheDir,
-  );
+  registerPreparationRoutes(app, db);
+  registerStreamRoutes(app, db, () => ({
+    available: sessionManager !== null,
+    ffmpegBinary: hardwareReport?.binary ?? 'ffmpeg',
+  }));
   registerHlsRoutes(app, db, () => sessionManager);
 
   /*
@@ -191,17 +191,18 @@ async function main(): Promise<void> {
     await sessionManager.start();
 
     /*
-     * Le travailleur de sous-titres draine la file persistee sans jamais
-     * bloquer une requete. Il reprend au demarrage ce qu une interruption a
-     * laisse en plan, et « npm run subtitles » alimente la meme file.
+     * La préparation des sous-titres draine la file persistée sans jamais
+     * bloquer une requête, et REPREND d'elle-même ce qu'un arrêt a laissé en
+     * plan. Sur une passe de seize heures, c'est ce qui évite de découvrir au
+     * matin qu'elle s'est arrêtée à trois heures.
      */
-    subtitleWorker = new SubtitleWorker(db, {
+    preparation = new SubtitlePreparation(db, {
       ffmpegBinary: capabilities.binary,
       cacheDir: subtitleCacheDir,
-      onLog: (message, details) => app.log.info(details ?? {}, message),
+      onLog: (message: string, details?: Record<string, unknown>) => app.log.info(details ?? {}, message),
     });
-    setSubtitleWorker(subtitleWorker);
-    subtitleWorker.start();
+    setPreparation(preparation);
+    preparation.start();
     app.log.info(
       `Transcodage : ${transcodePath} — ${config.transcode.maxSessions} session(s), ` +
         `expiration après ${config.transcode.idleSeconds} s`,
@@ -221,7 +222,7 @@ async function main(): Promise<void> {
    * serveur tue les processus restants et vide le répertoire de travail.
    */
   const shutdown = (): void => {
-    subtitleWorker?.stop();
+    preparation?.stop();
     void (sessionManager?.stop() ?? Promise.resolve())
       .catch(() => undefined)
       .then(() => app.close())

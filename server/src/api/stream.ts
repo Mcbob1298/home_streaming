@@ -24,7 +24,6 @@ import { mimeTypeFor, type PlaybackDecision } from '../playback/playability.js';
 import { preferenceFor, savePreference } from '../playback/preferences.js';
 import { findMedia as findResolvable, resolveDecision, tracksOf } from '../playback/resolve.js';
 import { preferenceFrom, resolveAudioChoice, resolveSubtitleChoice } from '../playback/tracks.js';
-import { readinessOf, requestExtraction, wakeSubtitleWorker } from '../transcode/subtitleQueue.js';
 import { episodeLabel } from '../progress/rules.js';
 import { progressOf } from '../progress/store.js';
 import { currentUserId } from '../progress/user.js';
@@ -298,8 +297,6 @@ export function registerStreamRoutes(
   app: FastifyInstance,
   db: Db,
   transcoding: () => { available: boolean; ffmpegBinary: string },
-  /** Racine du cache de sous-titres, ou null quand ffmpeg est absent. */
-  subtitleCacheDir: () => string | null,
 ): void {
   // -------------------------------------------------------------------------
   // GET /api/stream/:id/playability — la décision, et de quoi habiller le lecteur
@@ -369,49 +366,10 @@ export function registerStreamRoutes(
       imageOnlySubtitles: tracks.imageOnlySubtitles,
     };
 
-    /*
-     * On inscrit le fichier DÈS la playability, avant que la lecture ne
-     * démarre : c est le premier instant où l on sait ce qui sera regardé.
-     */
-    if (requestExtraction(db, file.id)) wakeSubtitleWorker();
-
     // La décision dépend de l'état de la base, qui peut changer à la passe
     // suivante : rien à mettre en cache côté navigateur.
     void reply.header('Cache-Control', 'no-store');
     return response;
-  });
-
-  // -------------------------------------------------------------------------
-  // GET /api/stream/:id/subtitles — quelles pistes sont PRÊTES
-  // -------------------------------------------------------------------------
-  /*
-   * Le lecteur interroge cette route pendant qu'une extraction tourne, et
-   * enrichit son sélecteur au fur et à mesure. Elle ne lit qu'un répertoire :
-   * la solliciter toutes les cinq secondes ne coûte rien.
-   */
-  app.get('/api/stream/:id/subtitles', (request, reply) => {
-    const id = readId((request.params as { id: string }).id);
-    if (id === null) return reply.code(400).send({ error: 'Identifiant de fichier invalide.' });
-
-    const cacheDir = subtitleCacheDir();
-    if (cacheDir === null) return { tracks: [], preparing: false };
-
-    const tracks = tracksOf(db, id);
-    const state = readinessOf(db, cacheDir, id);
-    const ready = new Set(state.ready);
-
-    void reply.header('Cache-Control', 'no-store');
-    return {
-      tracks: tracks.subtitles.map((track) => ({
-        streamIndex: track.streamIndex,
-        label: track.label,
-        language: track.language,
-        kind: track.kind,
-        ready: ready.has(track.streamIndex),
-      })),
-      preparing: state.preparing,
-      imageOnlySubtitles: tracks.imageOnlySubtitles,
-    };
   });
 
   // -------------------------------------------------------------------------

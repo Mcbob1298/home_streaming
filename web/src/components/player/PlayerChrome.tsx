@@ -31,8 +31,6 @@ export interface PlayerChromeProps {
   embeddedSubtitles: SubtitleOption[];
   /** Le fichier n'a que des sous-titres image : le menu doit le dire. */
   imageOnlySubtitles: boolean;
-  /** Une extraction est en cours : des pistes vont encore apparaître. */
-  preparingSubtitles: boolean;
   subtitleChoice: SubtitleChoice;
   audioTracks: TrackOption[];
   audioStream: number | null;
@@ -64,7 +62,6 @@ export function PlayerChrome(props: PlayerChromeProps) {
     subtitles,
     embeddedSubtitles,
     imageOnlySubtitles,
-    preparingSubtitles,
     subtitleChoice,
     audioTracks,
     audioStream,
@@ -150,7 +147,6 @@ export function PlayerChrome(props: PlayerChromeProps) {
                   subtitles={subtitles}
                   embeddedSubtitles={embeddedSubtitles}
                   imageOnlySubtitles={imageOnlySubtitles}
-                  preparingSubtitles={preparingSubtitles}
                   subtitleChoice={subtitleChoice}
                   audioTracks={audioTracks}
                   audioStream={audioStream}
@@ -314,7 +310,6 @@ function SettingsMenu({
   subtitles,
   embeddedSubtitles,
   imageOnlySubtitles,
-  preparingSubtitles,
   subtitleChoice,
   audioTracks,
   audioStream,
@@ -324,7 +319,6 @@ function SettingsMenu({
   subtitles: SubtitleTrack[];
   embeddedSubtitles: SubtitleOption[];
   imageOnlySubtitles: boolean;
-  preparingSubtitles: boolean;
   subtitleChoice: SubtitleChoice;
   audioTracks: TrackOption[];
   audioStream: number | null;
@@ -360,21 +354,10 @@ function SettingsMenu({
           key={`e-${track.streamIndex}`}
           label={track.label}
           active={subtitleChoice.kind === 'embedded' && subtitleChoice.streamIndex === track.streamIndex}
-          /*
-           * Une piste pas encore extraite reste VISIBLE mais inerte : la faire
-           * apparaître d'un coup déplacerait les lignes sous le curseur, et la
-           * cacher laisserait croire qu'elle n'existe pas.
-           */
-          disabled={track.ready === false}
           onClick={() => onSubtitle({ kind: 'embedded', streamIndex: track.streamIndex })}
         />
       ))}
 
-      {preparingSubtitles && (
-        <p className="px-4 py-2 text-[13px] leading-[1.5] text-faible">
-          Préparation en cours… Les pistes grisées s'activeront d'elles-mêmes, sans interrompre la lecture.
-        </p>
-      )}
 
       {subtitles.map((track) => (
         <MenuItem

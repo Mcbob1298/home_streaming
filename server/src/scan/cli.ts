@@ -15,6 +15,7 @@ import { stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { DATA_DIR, loadConfig, resolveDatabasePath, type LibraryConfig } from '../config.js';
+import { enqueueFiles, filesToPrepare } from '../transcode/subtitleQueue.js';
 import { openDatabase, syncLibrariesFromConfig, type LibraryRootRow } from '../db/index.js';
 import { DEFAULT_CONCURRENCY } from '../util/concurrency.js';
 import type { SkipReason } from './filters.js';
@@ -183,6 +184,27 @@ async function main(): Promise<void> {
   const moviesList = buildMoviesList(db);
   writeFileSync(moviesListPath, moviesList === '' ? '' : `${moviesList}\n`, 'utf8');
   console.log(`Liste des films écrite dans ${moviesListPath}`);
+
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * LES NOUVEAUX FICHIERS PARTENT EN PRÉPARATION TOUT DE SUITE.
+   *
+   * C'est ce qui fait qu'un film ajouté ce soir sera regardable dans quelques
+   * minutes sans qu'on ait à lancer quoi que ce soit : le scan l'inscrit, le
+   * serveur draine la file en tâche de fond.
+   *
+   * Le scan n'extrait RIEN lui-même — il enregistre le travail et rend la main.
+   * Un fichier inchangé garde son empreinte et n'est pas réinscrit.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  const inscrits = enqueueFiles(db, filesToPrepare(db));
+  if (inscrits.added + inscrits.reactivated > 0) {
+    console.log(
+      `\nPréparation des sous-titres : ${inscrits.added} nouveau(x), ` +
+        `${inscrits.reactivated} modifié(s) depuis la dernière passe.`,
+    );
+    console.log('  Elle se fait en tâche de fond dès que le serveur tourne, ou par « npm run subtitles ».');
+  }
 
   db.close();
 }

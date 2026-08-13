@@ -34,7 +34,6 @@ import { bitrateFor, outputHeight } from '../transcode/encode.js';
 import { buildMasterPlaylist, estimateBandwidth, needsMaster } from '../transcode/manifest.js';
 import type { SessionManager } from '../transcode/manager.js';
 import { buildPlaylist, buildSubtitlePlaylist, segmentFileName } from '../transcode/segments.js';
-import { readinessOf, requestExtraction, wakeSubtitleWorker } from '../transcode/subtitleQueue.js';
 import { AUDIO_BITRATE_BPS, readSubtitleTrack } from '../transcode/subtitles.js';
 import { streamUrlOf } from './stream.js';
 
@@ -310,27 +309,27 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     if (result.kind === 'failed') {
       return reply.code(503).send({ error: result.reason });
     }
-    if (result.kind === 'preparing') {
+    if (result.kind === 'absent') {
       /*
-       * 202 et non 503 : ce n'est pas une panne, c'est un travail en cours. Le
-       * lecteur n'a rien à réessayer tout de suite — il interroge l'état des
-       * pistes et proposera celle-ci quand elle sera prête.
+       * Ne devrait pas arriver : un titre non préparé n'est pas proposé. Si on
+       * y arrive quand même — cache effacé à la main, fichier remplacé entre
+       * l'affichage et le clic — on le dit franchement plutôt que de lancer une
+       * extraction de seize minutes dans une requête HTTP.
        */
-      requestExtraction(db, media.id);
-      wakeSubtitleWorker();
-      return reply.code(202).send({
-        error: 'Ce sous-titre est en cours de préparation. Il apparaîtra dans le sélecteur une fois prêt.',
+      return reply.code(409).send({
+        error:
+          'Les sous-titres de ce fichier ne sont pas préparés. Relancer « npm run subtitles » ' +
+          'pour les produire.',
       });
     }
 
     void reply.header('Content-Type', 'text/vtt; charset=utf-8');
     /*
-     * Contrairement aux segments, un sous-titre est STABLE : il ne dépend
-     * d'aucune session et ne change qu'avec le fichier source. Le navigateur
-     * peut donc le garder — c'est même souhaitable, il le redemande à chaque
-     * changement de piste.
+     * Un sous-titre préparé ne change plus jamais : il est produit une fois pour
+     * une version du fichier, et une nouvelle version produit une nouvelle
+     * préparation. Le navigateur peut donc le garder longtemps.
      */
-    void reply.header('Cache-Control', 'private, max-age=3600');
+    void reply.header('Cache-Control', 'private, max-age=86400');
     return result.vtt;
   });
 

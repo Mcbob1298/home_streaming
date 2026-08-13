@@ -35,7 +35,7 @@
  * Les évolutions sont additives et toutes les instructions sont en
  * `IF NOT EXISTS` : rouvrir une base v1 la complète sans rien perdre.
  */
-export const SCHEMA_VERSION = 11;
+export const SCHEMA_VERSION = 12;
 
 export const SCHEMA_SQL = `
 -- ---------------------------------------------------------------------------
@@ -463,6 +463,19 @@ CREATE TABLE IF NOT EXISTS keyframe_index (
  * une fois, et rejouer la migration sur une base à jour ne fait rien.
  */
 export const COLUMN_ADDITIONS: { table: string; column: string; definition: string }[] = [
+  /*
+   * Empreinte du fichier pour laquelle ses sous-titres sont PRÊTS.
+   *
+   * Une seule colonne porte l état ET son invalidation : les sous-titres sont
+   * prêts si et seulement si cette valeur égale l empreinte courante du fichier,
+   * « taille-mtime ». Un fichier réencodé sur place voit donc son état retomber
+   * tout seul, sans qu aucun code n ait à y penser — le même mécanisme que le
+   * cache des images clés.
+   *
+   * NULL signifie « en préparation ». La reprise de données de db/index.ts la
+   * renseigne pour la bibliothèque déjà indexée, qui ne doit pas disparaître.
+   */
+  { table: 'media_file', column: 'subtitles_fingerprint', definition: 'TEXT' },
   /*
    * Chemin EXACT du fichier tel que readdir l'a renvoyé, sans normalisation.
    *
