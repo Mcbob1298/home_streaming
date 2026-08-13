@@ -74,6 +74,27 @@ function pickHero(movies: MovieSummary[], shows: ShowSummary[]): HeroItem[] {
   return picked;
 }
 
+/**
+ * Une rangée de genre, dans un composant à elle.
+ *
+ * `useStableOrder` est un hook : il ne peut pas être appelé dans le `.map` des
+ * genres. Sans ce composant, les quatre rangées du bas restaient les seules à
+ * sauter pendant une passe — le défaut y était même plus visible qu'ailleurs,
+ * elles sont triées par date d'ajout.
+ */
+function RangeeGenre({ titre, items, freeze }: { titre: string; items: MovieSummary[]; freeze: boolean }) {
+  const stables = useStableOrder(items, freeze);
+  if (stables.length === 0) return null;
+
+  return (
+    <MediaRow title={titre}>
+      {stables.map((movie) => (
+        <MovieTile key={movie.id} movie={movie} />
+      ))}
+    </MediaRow>
+  );
+}
+
 export function HomePage() {
   const recent = useQuery({ queryKey: ['movies', 'added'], queryFn: () => api.movies({ sort: 'added' }) });
   const films = useQuery({ queryKey: ['movies', 'title'], queryFn: () => api.movies({ sort: 'title' }) });
@@ -159,16 +180,14 @@ export function HomePage() {
           {toutesSeries.map(showTile)}
         </MediaRow>
 
-        {topGenres.map((genre, position) => {
-          const row = genreRows[position];
-          const items = row?.data?.items ?? [];
-          if (items.length === 0) return null;
-          return (
-            <MediaRow key={genre.id} title={genre.name}>
-              {items.map(movieTile)}
-            </MediaRow>
-          );
-        })}
+        {topGenres.map((genre, position) => (
+          <RangeeGenre
+            key={genre.id}
+            titre={genre.name}
+            items={genreRows[position]?.data?.items ?? []}
+            freeze={enCours}
+          />
+        ))}
       </div>
     </div>
   );

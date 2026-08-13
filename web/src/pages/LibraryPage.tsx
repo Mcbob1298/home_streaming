@@ -8,6 +8,7 @@ import { MediaGrid } from '../components/MediaGrid';
 import { ErrorMessage, Loading } from '../components/States';
 import { MovieTile, ShowTile } from '../components/WorkTile';
 import { findGenreBySlug, slugifyGenre } from '../genres';
+import { useLibraryRefresh, usePreparationStatus, useStableOrder } from '../preparation';
 
 const SORTS: { key: SortField; label: string }[] = [
   { key: 'title', label: 'Titre' },
@@ -49,6 +50,21 @@ export function LibraryPage() {
     getNextPageParam: (last) => (last.page < last.totalPages ? last.page + 1 : undefined),
   });
 
+  /*
+   * Pendant une passe de préparation, la grille se remplit sous les yeux.
+   *
+   * Calculé AVANT les retours anticipés — ce sont des hooks. Le gel garde les
+   * vignettes déjà affichées à leur place et pose les arrivantes à la suite :
+   * sur un tri par titre, un film qui devient prêt s'insérerait au milieu et
+   * décalerait toute la grille sous le curseur.
+   */
+  const preparation = usePreparationStatus();
+  useLibraryRefresh(preparation);
+  const enCours = preparation?.running === true || preparation?.paused === true;
+
+  const chargees = (list.data?.pages ?? []).flatMap((page) => page.items);
+  const items = useStableOrder(chargees, enCours);
+
   if (libraries.isPending) return <Loading />;
   if (libraries.error !== null) return <ErrorMessage error={libraries.error} />;
   if (library === undefined) return <Empty label={`Bibliothèque « ${libraryId} » inconnue.`} />;
@@ -67,7 +83,6 @@ export function LibraryPage() {
     ...relevant.map((entry) => ({ key: slugifyGenre(entry.name), label: entry.name })),
   ];
 
-  const items = (list.data?.pages ?? []).flatMap((page) => page.items);
   const total = list.data?.pages[0]?.total ?? 0;
 
   function update(changes: Record<string, string | null>) {
