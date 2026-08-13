@@ -622,6 +622,73 @@ Elles disparaîtront ensemble quand le transcodage rendra tout lisible.
 
 ---
 
+## Sous-titres : préparés en amont, jamais pendant la lecture
+
+Les sous-titres embarqués sont extraits **une fois pour toutes** en WebVTT,
+stockés durablement, et servis comme des fichiers statiques. Un titre dont la
+préparation n'est pas finie n'apparaît pas dans les rangées de l'accueil ni dans
+les grilles.
+
+Ce choix vient d'une mesure : **une extraction traverse le fichier entier**.
+Relevé sur Avatar — 94,2 Go — 964,9 s, soit 97,6 Mo/s, exactement le débit du
+disque. Le coût est linéaire en taille et ne dépend pas du nombre de pistes :
+douze coûtent le même prix que deux. Deux voies ont été instruites et écartées,
+mesures à l'appui : `mkvextract` est **plus lent** que ffmpeg (×11 sur 2,8 Go),
+et `-ss` avant `-i` sur un flux de sous-titres produit des fichiers vides.
+
+Il n'y a donc pas d'extraction rapide. La seule réponse est de la faire avant.
+
+### Pourquoi la bibliothèque existante est déclarée prête d'office
+
+`db/index.ts` contient une reprise de données qui, au moment où la colonne
+`media_file.subtitles_fingerprint` apparaît, marque **tous les fichiers déjà
+indexés comme prêts**. Elle ne s'exécute qu'une fois, et cette ligne n'est pas un
+oubli.
+
+Sans elle, le verrou s'appliquerait rétroactivement : les 2 796 fichiers
+passeraient d'un coup en préparation, et **l'interface serait vide pendant les
+seize heures** de la première passe. Une bibliothèque qui fonctionne depuis des
+semaines deviendrait blanche au redémarrage suivant, pour une fonctionnalité
+censée l'améliorer.
+
+Ces fichiers sont « prêts » au sens où ils l'ont toujours été : sans sous-titres
+embarqués servis, ce qu'ils n'ont jamais eu. `npm run subtitles` les enrichit
+progressivement **sans jamais les cacher**, et le verrou ne joue que pour les
+fichiers vus pour la première fois après la migration — c'est-à-dire exactement
+le cas qu'il est censé couvrir : un film ajouté ce soir n'apparaît que complet.
+
+Pour l'interprétation stricte — tout cacher jusqu'à la fin de la première
+passe — il suffit de retirer l'appel à `backfill()` dans `openDatabase()`.
+
+### Ce que la préparation garantit, et ce qu'elle coûte
+
+| | |
+|---|---|
+| Délai à la lecture | celui d'un fichier statique |
+| Passe complète | ~16 h pour 5,13 Tio, à lancer une nuit |
+| Reprise | à tout moment : Ctrl-C, redémarrage du conteneur, pause |
+| Ordre | ajouts récents d'abord, puis les plus petits |
+| Invalidation | empreinte taille + mtime, comme le cache des images clés |
+
+La pause **tue** le ffmpeg en cours plutôt que d'attendre sa fin : sur le plus
+gros fichier, attendre voudrait dire seize minutes, alors que la pause existe
+précisément pour rendre le disque tout de suite. Le travail interrompu retourne
+en attente, il n'est jamais compté en échec.
+
+### Où l'absence ne s'applique pas
+
+Trois exceptions, et ce ne sont pas des concessions :
+
+- **la recherche** renvoie tout et marque l'état. On sait ce qu'on a ajouté hier
+  soir : ne pas le trouver par son nom se lirait comme un bug de scan, pas comme
+  une attente ;
+- **l'accès direct** à une fiche répond toujours, avec « Lire » désactivé. Un 404
+  sur une œuvre qui existe serait faux ;
+- **une série n'est jamais masquée** pour un épisode. Elle apparaît dès qu'un
+  épisode est prêt, et c'est l'épisode que la grille marque.
+
+---
+
 ## Déploiement
 
 Le serveur tourne **sur le NAS**, en conteneur. L'interface, elle, peut rester
