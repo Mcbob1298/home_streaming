@@ -19,7 +19,7 @@
  * ═════════════════════════════════════════════════════════════════════════════
  */
 import { randomUUID } from 'node:crypto';
-import { rmSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 
 import type { Db } from '../db/index.js';
 import { JobQueue, type ClaimOrder } from '../jobs/queue.js';
@@ -300,6 +300,39 @@ export function applyConverterVersion(
   return { invalidated: cibles.length, from: stored ?? null };
 }
 
+/**
+ * Les racines de bibliothèque qui ne répondent pas.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * UN DISQUE ABSENT N'EST PAS UNE BIBLIOTHÈQUE DE FICHIERS ILLISIBLES.
+ *
+ * Sans cette distinction, la passe traite l'absence du montage comme 2 306
+ * défauts individuels : elle parcourt la file en quelques minutes, marque tout
+ * en échec, et le rapport annonce une bibliothèque corrompue là où il manque un
+ * point de montage.
+ *
+ * Constaté en vrai — un serveur lancé sur le poste de développement avec la base
+ * du NAS : 451 travaux marqués « No such file or directory » avant que la passe
+ * ne s'arrête, pour quatre racines simplement inexistantes sur cette machine.
+ * Le même enchaînement se produirait sur le NAS si le disque USB se démontait en
+ * cours de passe.
+ *
+ * C'est aggravé par le rattrapage, qui écarte les échecs connus pour ne pas
+ * boucler : les fichiers ainsi marqués sortiraient du bouton « Rechercher ce qui
+ * manque » et n'y reviendraient plus jamais tout seuls.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export function unreachableRoots(db: Db): string[] {
+  const racines = db.prepare('SELECT path FROM library_root').all() as { path: string }[];
+  return racines.map((r) => r.path).filter((p) => !existsSync(p));
+}
+
+/** La racine d'un fichier, pour savoir si c'est LUI ou son disque qui manque. */
+function rootPathOf(db: Db, rootId: number): string | null {
+  const row = db.prepare('SELECT path FROM library_root WHERE id = ?').get(rootId) as { path: string } | undefined;
+  return row?.path ?? null;
+}
+
 /** Nombre d'échecs affichés. Au-delà, la liste cesse d'être lisible. */
 const FAILURE_LIMIT = 20;
 
@@ -395,6 +428,8 @@ export interface PreparationStatus {
   /** Secondes restantes, estimées sur les OCTETS et le débit par racine. */
   remainingSeconds: number | null;
   failures: { mediaFileId: number; fileName: string; error: string }[];
+  /** Racine de bibliothèque introuvable ayant arrêté la passe. Null si tout va bien. */
+  unreachableRoot: string | null;
 }
 
 /**
@@ -421,6 +456,15 @@ export class SubtitlePreparation {
   private readonly token = `${process.pid}-${randomUUID()}`;
   private lockTimer: NodeJS.Timeout | null = null;
   private blocked = false;
+
+  /**
+   * La racine introuvable qui a arrêté la passe, s'il y en a une.
+   *
+   * Sans elle, la page affichait « running: false » sans un mot d'explication —
+   * et c'est précisément l'état devant lequel on se retrouve à chercher une
+   * panne matérielle qui n'existe pas.
+   */
+  private unreachable: string | null = null;
   private current: { mediaFileId: number; fileName: string; sizeBytes: number } | null = null;
 
   /**
@@ -459,6 +503,23 @@ export class SubtitlePreparation {
    */
   start(): boolean {
     this.stopped = false;
+
+    /*
+     * Aucune racine accessible : il n'y a rien à préparer, et s'y essayer
+     * marquerait la bibliothèque entière en échec en quelques minutes. C'est
+     * exactement ce qui est arrivé avec la base du NAS ouverte sur le poste de
+     * développement — 451 travaux perdus pour des chemins qui n'existaient pas
+     * sur cette machine.
+     */
+    const injoignables = unreachableRoots(this.db);
+    const total = (this.db.prepare('SELECT COUNT(*) AS n FROM library_root').get() as { n: number }).n;
+    if (total > 0 && injoignables.length === total) {
+      this.unreachable = injoignables[0] ?? null;
+      this.options.onLog('aucune racine de bibliothèque accessible, préparation non démarrée', {
+        racines: injoignables,
+      });
+      return false;
+    }
 
     /*
      * Le verrou AVANT `requeueStale()`, et c'est tout l'objet du verrou.
@@ -550,6 +611,7 @@ export class SubtitlePreparation {
 
   resume(): void {
     this.pausedFlag = false;
+    this.unreachable = null;
     this.options.onLog('préparation des sous-titres reprise');
     void this.drain();
   }
@@ -625,6 +687,7 @@ export class SubtitlePreparation {
       throughput: global.length === 0 ? null : global.reduce((s, v) => s + v, 0) / global.length,
       remainingSeconds,
       failures: recentFailures(this.db),
+      unreachableRoot: this.unreachable,
     };
   }
 
@@ -746,6 +809,25 @@ export class SubtitlePreparation {
              * rien et qu'une reprise repart exactement là où on s'était arrêté.
              */
             queue.requeueOne(job.id);
+            return false;
+          }
+
+          /*
+           * Avant de compter un échec : le disque est-il seulement monté ?
+           *
+           * Le travail retourne EN ATTENTE, pas en échec — il n'a rien de
+           * fautif, on n'a simplement pas pu le lire. Et la passe s'arrête au
+           * lieu de parcourir la file entière pour la marquer défaillante.
+           */
+          const racine = rootPathOf(this.db, file.rootId);
+          if (racine !== null && !existsSync(racine)) {
+            queue.requeueOne(job.id);
+            this.unreachable = racine;
+            this.options.onLog('racine de bibliothèque introuvable, préparation arrêtée', {
+              racine,
+              mediaFileId: file.id,
+            });
+            this.stop();
             return false;
           }
 

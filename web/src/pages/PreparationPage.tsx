@@ -130,6 +130,22 @@ export function PreparationPage() {
         />
       </div>
 
+      {/*
+        Une passe arrêtée doit DIRE pourquoi. « running: false » sans un mot
+        d'explication a déjà envoyé chercher une panne de disque qui n'existait
+        pas : la base pointait des chemins absents de cette machine.
+      */}
+      {status.unreachableRoot !== null && (
+        <div className="mt-6 rounded border border-[rgba(240,121,122,0.4)] bg-[rgba(240,121,122,0.08)] px-5 py-4">
+          <div className="text-[14px] font-semibold text-[#f0797a]">Préparation arrêtée : dossier introuvable</div>
+          <div className="mt-2 font-mono text-[13px] break-all text-texte">{status.unreachableRoot}</div>
+          <p className="mt-2 text-[13px] leading-[1.6] text-faible">
+            Ce chemin ne répond pas. Le disque est-il monté, et le serveur tourne-t-il bien sur la machine
+            qui porte ces fichiers&nbsp;? Aucun travail n’a été perdu : ils sont retournés en attente.
+          </p>
+        </div>
+      )}
+
       <Barre done={status.bytesDone} total={status.bytesTotal} paused={status.paused} />
 
       <div className="mt-6 flex flex-wrap items-center gap-3">

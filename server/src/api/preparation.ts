@@ -53,6 +53,7 @@ export function registerPreparationRoutes(app: FastifyInstance, db: Db): void {
         throughput: null,
         remainingSeconds: null,
         failures: recentFailures(db),
+        unreachableRoot: null,
       };
     }
 

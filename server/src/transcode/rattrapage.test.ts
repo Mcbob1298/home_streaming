@@ -30,6 +30,7 @@ import {
   recentFailures,
   requeueMissing,
   subtitleQueue,
+  unreachableRoots,
   verdictExtraction,
   workTotals,
 } from './subtitleQueue.js';
@@ -561,5 +562,32 @@ describe('readySql — négeable sans mentir', () => {
     db.prepare('UPDATE media_file SET size_bytes = ? WHERE id = 1').run(media.sizeBytes + 1);
     expect(compte(readySql('f'))).toBe(0);
     expect(compte(`NOT (${readySql('f')})`)).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('unreachableRoots — un disque absent n’est pas une bibliothèque cassée', () => {
+  it('signale une racine qui n’existe pas', () => {
+    // La racine du beforeEach est « /m » : elle n'existe sur aucune machine.
+    expect(unreachableRoots(db)).toEqual(['/m']);
+  });
+
+  it('ne signale rien quand la racine existe', () => {
+    db.prepare('UPDATE library_root SET path = ? WHERE id = 1').run(cacheRoot);
+    expect(unreachableRoots(db)).toEqual([]);
+  });
+
+  it('distingue les racines une par une', () => {
+    /*
+     * Le NAS en a quatre : le disque USB peut se démonter pendant que le volume
+     * interne répond toujours. Tout arrêter serait excessif, ne rien voir le
+     * serait aussi.
+     */
+    db.prepare("INSERT INTO library_root (id, library_id, path, path_key) VALUES (2, 'films', ?, ?)").run(
+      cacheRoot,
+      cacheRoot,
+    );
+    expect(unreachableRoots(db)).toEqual(['/m']);
   });
 });

@@ -30,6 +30,8 @@ export interface PreparationStatus {
   throughput: number | null;
   remainingSeconds: number | null;
   failures: { mediaFileId: number; fileName: string; error: string }[];
+  /** Racine de bibliothèque introuvable ayant arrêté la passe. */
+  unreachableRoot: string | null;
 }
 
 /** Ce que « Rechercher ce qui manque » a trouvé. */
