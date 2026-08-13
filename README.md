@@ -752,8 +752,25 @@ L'utilisateur SSH est `Mathias Cassonnet` — **le nom contient un espace**. Il
 doit être protégé par des guillemets dans chaque commande :
 
 ```bash
-ssh "Mathias Cassonnet@192.168.1.15"
-scp -r ./x "Mathias Cassonnet@192.168.1.15:/volume1/docker/home_streaming/"
+ssh -i ~/.ssh/nas_home_streaming "Mathias Cassonnet@192.168.1.15"
+```
+
+Deux pièges au transfert, tous deux silencieux ou trompeurs :
+
+- **la clé doit être nommée.** Sans `-i ~/.ssh/nas_home_streaming`, ssh demande un
+  mot de passe et finit par `Permission denied (publickey,password)` ;
+- **`scp` a besoin de `-O` ET du nom de fichier de destination.** Le mode SFTP
+  par défaut échoue ici sur `dest open … : No such file or directory` alors que le
+  répertoire existe, et la forme `répertoire/` échoue même avec `-O` :
+
+```bash
+# marche
+scp -O -i ~/.ssh/nas_home_streaming server/src/index.ts \
+  "Mathias Cassonnet@192.168.1.15:/volume1/docker/home_streaming/server/src/index.ts"
+
+# échoue — répertoire en destination
+scp -O -i ~/.ssh/nas_home_streaming server/src/index.ts \
+  "Mathias Cassonnet@192.168.1.15:/volume1/docker/home_streaming/server/src/"
 ```
 
 Le code vit sous `/volume1/docker/home_streaming`, **pas** dans le home de
