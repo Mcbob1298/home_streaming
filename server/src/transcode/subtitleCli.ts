@@ -24,8 +24,10 @@ import { DATA_DIR, loadConfig, loadEnvFile, resolveDatabasePath, SUBTITLE_CACHE_
 import { openDatabase, type Db } from '../db/index.js';
 import { detectCapabilities } from './capabilities.js';
 import { markPending } from './readiness.js';
+import { CONVERTER_VERSION } from '../playback/vtt.js';
 import {
   SubtitlePreparation,
+  applyConverterVersion,
   enqueueFiles,
   filesToPrepare,
   requeueMissing,
@@ -103,34 +105,6 @@ async function main(): Promise<void> {
   console.log(`ffmpeg : ${capabilities.version}`);
   console.log(`Cache  : ${cacheDir}\n`);
 
-  const queue = subtitleQueue(db);
-  if (options.full) {
-    reinitialiser(db);
-    console.log(`  ${queue.requeueAll()} travaux remis en attente (--full)`);
-  }
-  if (options.retryFailed) console.log(`  ${queue.requeueFailed()} travaux en échec relancés`);
-
-  /*
-   * Le disque a le dernier mot : un travail `done` dont le cache a disparu se
-   * déclarerait à jour indéfiniment. La vérification coûte un `readdir` par
-   * fichier — négligeable devant la passe qu'elle précède.
-   */
-  const rattrapes = requeueMissing(db, cacheDir);
-
-  const cibles = filesToPrepare(db);
-  const inscrits = enqueueFiles(db, cibles);
-  const octetsTotal = cibles.reduce((sum, { file }) => sum + file.sizeBytes, 0);
-
-  console.log(`${cibles.length} fichiers présents, ${octets(octetsTotal)} au total.`);
-  console.log(
-    `  ${inscrits.added} nouveaux, ${inscrits.reactivated} modifiés depuis la dernière passe, ` +
-      `${inscrits.unchanged} déjà à jour`,
-  );
-  if (rattrapes.missing > 0) {
-    console.log(`  ${rattrapes.missing} sans WebVTT sur le disque, remis en file (${octets(rattrapes.bytes)})`);
-  }
-  console.log();
-
   /*
    * La commande emploie la MÊME machine que le serveur : même ordre, même
    * marquage, même comptabilité. Écrire deux fois la boucle de traitement, c'est
@@ -154,6 +128,68 @@ async function main(): Promise<void> {
       }
     },
   });
+
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * LE VERROU AVANT LA PREMIÈRE ÉCRITURE, PAS AVANT LA PREMIÈRE EXTRACTION.
+   *
+   * Le prendre juste avant la boucle ne suffisait pas : « --full », le
+   * rattrapage et l'inscription remettent des travaux en attente. Lancée pendant
+   * que le serveur draine, cette commande repassait donc en 'pending' le travail
+   * que le serveur avait en cours — exactement l'interférence que le verrou doit
+   * empêcher. Constaté en production : 2 243 fichiers remis en file avant que le
+   * refus ne s'affiche.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  const prise = passe.acquireDrain();
+  if (!prise.acquired) {
+    const { pid, sinceSeconds } = prise.heldBy as { pid: number; sinceSeconds: number };
+    console.error(
+      [
+        `Une préparation tourne déjà dans ce conteneur (PID ${pid}, depuis ${sinceSeconds} s).`,
+        `  C'est le serveur : il draine la file en continu, il n'y a rien à lancer ici.`,
+        `  Pour reprendre la main : arrêter le serveur, ou piloter la passe depuis la page « Préparation ».`,
+      ].join('\n'),
+    );
+    db.close();
+    process.exit(1);
+  }
+
+  const queue = subtitleQueue(db);
+  if (options.full) {
+    reinitialiser(db);
+    console.log(`  ${queue.requeueAll()} travaux remis en attente (--full)`);
+  }
+  if (options.retryFailed) console.log(`  ${queue.requeueFailed()} travaux en échec relancés`);
+
+  /*
+   * Le disque a le dernier mot : un travail `done` dont le cache a disparu se
+   * déclarerait à jour indéfiniment. La vérification coûte un `readdir` par
+   * fichier — négligeable devant la passe qu'elle précède.
+   */
+  const converti = applyConverterVersion(db, cacheDir);
+  if (converti.invalidated > 0) {
+    console.log(
+      `  ${converti.invalidated} fichiers a refaire : le convertisseur a change ` +
+        `(version ${converti.from ?? '1'} -> ${CONVERTER_VERSION})`,
+    );
+  }
+
+  const rattrapes = requeueMissing(db, cacheDir);
+
+  const cibles = filesToPrepare(db);
+  const inscrits = enqueueFiles(db, cibles);
+  const octetsTotal = cibles.reduce((sum, { file }) => sum + file.sizeBytes, 0);
+
+  console.log(`${cibles.length} fichiers présents, ${octets(octetsTotal)} au total.`);
+  console.log(
+    `  ${inscrits.added} nouveaux, ${inscrits.reactivated} modifiés depuis la dernière passe, ` +
+      `${inscrits.unchanged} déjà à jour`,
+  );
+  if (rattrapes.missing > 0) {
+    console.log(`  ${rattrapes.missing} sans WebVTT sur le disque, remis en file (${octets(rattrapes.bytes)})`);
+  }
+  console.log();
 
   const debut = Date.now();
   let traites = 0;

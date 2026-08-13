@@ -21,6 +21,27 @@ import { languageLabel } from './tracks.js';
  */
 export { languageLabel };
 
+/**
+ * Version de ce convertisseur.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * À INCRÉMENTER DÈS QUE LA CONVERSION CHANGE CE QU'ELLE PRODUIT.
+ *
+ * Les WebVTT sont écrits une fois puis servis comme des fichiers statiques :
+ * corriger le convertisseur ne corrige RIEN pour les fichiers déjà produits. Le
+ * jour où le nettoyage des balises a été ajouté, 881 fichiers sur 1 993 en
+ * portaient encore, et rien dans la base ne pouvait le savoir — l'empreinte du
+ * fichier source n'avait pas bougé.
+ *
+ * Ce numéro est comparé au démarrage. S'il a changé, les fichiers préparés sont
+ * remis en préparation et leur cache est effacé.
+ *
+ *   1 — conversion initiale
+ *   2 — retrait des balises ASS/HTML résiduelles du texte des répliques
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export const CONVERTER_VERSION = 2;
+
 /** Formats qu'on sait convertir, extension ou nom de codec ffmpeg. */
 export const CONVERTIBLE_FORMATS = ['srt', 'subrip', 'vtt', 'webvtt', 'ass', 'ssa', 'mov_text', 'text'] as const;
 
@@ -57,20 +78,91 @@ export function convertToVtt(text: string, format: string): string {
 }
 
 /**
+ * Balises que WebVTT connaît. Tout le reste est du bruit à l'écran.
+ *
+ * `c` est la balise de classe, celle qui porte la couleur : `<c.magenta>`.
+ */
+const WEBVTT_TAGS = new Set(['i', 'b', 'u', 'ruby', 'rt', 'v', 'lang', 'c']);
+
+/**
+ * Les huit couleurs que WebVTT sait rendre, par classe.
+ *
+ * Le navigateur applique une feuille de style par défaut à ces classes : c'est
+ * ce qui permet de traduire un `<font color>` sans perdre la couleur.
+ */
+const VTT_COLORS = new Set(['white', 'lime', 'cyan', 'red', 'yellow', 'magenta', 'blue', 'black']);
+
+/**
+ * Débarrasse le TEXTE d'une réplique de ce qui s'afficherait tel quel.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * UN SRT CONTIENT SOUVENT DU BALISAGE QUI N'EST PAS DU SRT.
+ *
+ * Relevé sur les 1 993 WebVTT produits : 881 en portaient. 24 514 blocs
+ * `{\anN}` — du positionnement ASS glissé dans des sources SRT — et 26 029
+ * `<font color>`. Les accolades n'ont aucun sens en WebVTT : le navigateur
+ * affichait littéralement « {\an1}- Comme vous le voyez ici, ».
+ *
+ * Trois traitements, selon ce que la balise VEUT DIRE :
+ *
+ *   • `{\...}` — composition ASS. Retiré : WebVTT ne positionne pas.
+ *   • `<font color="magenta">` — traduit en `<c.magenta>` quand la couleur est
+ *     l'une des huit que WebVTT connaît. La couleur porte du sens dans les
+ *     sous-titres pour sourds, où elle désigne QUI parle.
+ *   • `<span>`, `<font color="#ab12cd">`, et tout inconnu — la balise part, le
+ *     texte reste. Perdre un attribut vaut mieux que perdre une réplique.
+ *
+ * `<i>`, `<b>`, `<u>` sont GARDÉS : WebVTT les rend nativement, et ce sont les
+ * 101 778 occurrences majoritaires.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export function cleanCueText(line: string): string {
+  const sansAss = line
+    /*
+     * Seuls les blocs qui commencent par une barre inverse sont des balises
+     * ASS. Retirer toutes les accolades mangerait une réplique qui en contient
+     * pour de bon — « {Musique} » n'est pas du balisage.
+     */
+    .replace(/\{\\[^}]*\}/g, '');
+
+  return sansAss.replace(/<\/?([a-zA-Z]+)([^>]*)>/g, (balise, nom: string, attributs: string) => {
+    const tag = nom.toLowerCase();
+    const fermante = balise.startsWith('</');
+
+    if (tag === 'font') {
+      if (fermante) return '</c>';
+      const couleur = /color\s*=\s*["']?([a-zA-Z]+)["']?/.exec(attributs)?.[1]?.toLowerCase();
+      return couleur !== undefined && VTT_COLORS.has(couleur) ? `<c.${couleur}>` : '<c>';
+    }
+
+    return WEBVTT_TAGS.has(tag) ? balise : '';
+  });
+}
+
+/** Applique le nettoyage aux seules lignes de TEXTE, jamais aux horodatages. */
+function cleanCues(vtt: string): string {
+  return vtt
+    .split('\n')
+    .map((line) => (line.includes('-->') ? line : cleanCueText(line)))
+    .join('\n');
+}
+
+/**
  * Convertit un SRT — ou laisse passer un WebVTT.
  *
- * Un fichier déjà en WebVTT est renvoyé tel quel, à la marque d'ordre des
- * octets près : la réécrire ferait échouer l'analyse du navigateur, qui exige
- * « WEBVTT » aux tout premiers caractères.
+ * L'en-tête d'un fichier déjà en WebVTT est conservé intact : le navigateur
+ * exige « WEBVTT » aux tout premiers caractères. Seul le texte des répliques est
+ * nettoyé, et une source `webvtt` embarquée peut porter le même balisage
+ * parasite qu'un SRT.
  */
 export function toVtt(text: string): string {
   // La marque d'ordre des octets est fréquente sur les .srt écrits sous
   // Windows, et elle empêche la reconnaissance de l'en-tête.
   const clean = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n');
 
-  if (clean.startsWith('WEBVTT')) return clean;
+  if (clean.startsWith('WEBVTT')) return cleanCues(clean);
 
-  return `WEBVTT\n\n${clean.replace(TIMESTAMP, '$1.$2').trimStart()}`;
+  return cleanCues(`WEBVTT\n\n${clean.replace(TIMESTAMP, '$1.$2').trimStart()}`);
 }
 
 /**

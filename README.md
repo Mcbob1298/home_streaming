@@ -712,11 +712,62 @@ six. Ces six-là venaient d'ailleurs d'un redémarrage compté comme échec déf
 | Reprise | à tout moment : Ctrl-C, redémarrage du conteneur, pause |
 | Ordre | ajouts récents d'abord, puis les plus petits |
 | Invalidation | empreinte taille + mtime, comme le cache des images clés |
+| Concurrence | un seul processus draine, verrou dans `meta` |
 
 La pause **tue** le ffmpeg en cours plutôt que d'attendre sa fin : sur le plus
 gros fichier, attendre voudrait dire seize minutes, alors que la pause existe
 précisément pour rendre le disque tout de suite. Le travail interrompu retourne
 en attente, il n'est jamais compté en échec.
+
+#### L'ordre est calculé au moment de CHOISIR
+
+`ORDER BY job.id` n'est pas un ordre, c'est un ordre d'arrivée. Il coïncide avec
+l'ordre voulu tant que tout est inscrit d'un seul coup, et devient faux dès qu'un
+travail arrive plus tard : le nouveau venu reçoit le plus grand identifiant et
+passe donc en **dernier** — mesuré à 1 449 travaux d'attente, près de sept
+heures, pour un film ajouté le soir même. C'est l'inverse exact de la règle.
+
+`ClaimOrder` porte donc l'ordre par file, appliqué à chaque sélection. Vérifié en
+production sur le pire cas : Avatar, 101,2 Go, rang **2280 sur 2280** par la
+règle de taille ; déclaré ajouté ce soir, rang **1**.
+
+Le `LEFT JOIN` n'est pas une précaution de style : avec une jointure stricte, un
+travail dont la cible a disparu de `media_file` sortirait de la sélection et ne
+serait plus jamais pris — une file qui se bloque sans rien dire.
+
+#### Un seul processus draine à la fois
+
+`requeueStale()` remet en attente **tous** les travaux `running` au démarrage.
+C'est juste avec un seul processus, faux avec deux : `npm run subtitles` lancé
+pendant que le serveur tourne arrachait au serveur son extraction en cours, et
+les deux ffmpeg se partageaient le disque.
+
+Le verrou vit dans `meta.subtitles_drain_lock` et porte le **PID** de son
+détenteur. Un processus mort ne bloque donc rien, et la passe repart treize
+secondes après un redémarrage de conteneur sans attendre l'expiration d'un délai.
+Le rafraîchissement tourne toutes les 30 s, indépendamment des extractions : une
+extraction de seize minutes ne fait pas expirer son propre verrou.
+
+Il est pris **avant la première écriture**, pas avant la première extraction. Le
+prendre juste avant la boucle ne suffisait pas — `--full`, le rattrapage et
+l'inscription remettent des travaux en attente, et la commande avait déjà remis
+2 243 fichiers en file avant d'afficher son refus.
+
+#### Corriger le convertisseur ne corrige pas la bibliothèque
+
+Un WebVTT est écrit une fois puis servi comme un fichier statique : changer la
+conversion ne change rien à ce qui existe déjà, et l'empreinte du fichier source
+n'a pas bougé — rien ne peut le détecter.
+
+`CONVERTER_VERSION`, dans `playback/vtt.ts`, est comparé au démarrage. S'il a
+changé, les fichiers préparés repassent en préparation **et leur cache est
+effacé** — sans l'effacement, `extractSubtitles` constaterait que les `.vtt`
+attendus existent et ne referait rien. L'empreinte est remise à NULL en même
+temps, sans quoi on recréerait le défaut du fichier qui se déclare prêt et
+répond 409.
+
+Coût constaté au passage en version 2 : 999 fichiers à refaire, soit 0,75 Tio
+relus. **À incrémenter dès que la conversion change ce qu'elle produit.**
 
 ### Où l'absence ne s'applique pas
 

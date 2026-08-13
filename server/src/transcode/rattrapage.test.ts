@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { nowIso, openDatabase, type Db } from '../db/index.js';
 import { JobQueue, type JobRow } from '../jobs/queue.js';
-import { isReady, markReady } from './readiness.js';
+import { isReady, markReady, readySql } from './readiness.js';
 import { cacheKey, extractableTracksByFile, missingTracks } from './subtitles.js';
 import {
   filesMissingAssets,
@@ -438,5 +438,128 @@ describe('workTotals — une seule population pour les fichiers ET les octets', 
 
   it('rend zéro sur une file vide sans planter', () => {
     expect(workTotals(db)).toEqual({ files: 0, filesDone: 0, bytes: 0, bytesDone: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('ordre de sélection — les ajouts récents passent devant', () => {
+  /** Un fichier avec une date de découverte choisie. */
+  function vu(id: number, quand: string, taille: number): void {
+    db.prepare(
+      `INSERT INTO media_file (id, library_id, library_root_id, path, path_key, relative_path, file_name,
+                               extension, size_bytes, mtime_ms, present, first_seen_at, last_seen_at)
+       VALUES (?, 'films', 1, ?, ?, ?, ?, '.mkv', ?, 1700000000000, 1, ?, ?)`,
+    ).run(id, `/m/f${id}.mkv`, `/m/f${id}.mkv`, `f${id}.mkv`, `f${id}.mkv`, taille, quand, quand);
+    db.prepare(
+      `INSERT INTO embedded_subtitle (media_file_id, stream_index, codec, is_image_based)
+       VALUES (?, 2, 'subrip', 0)`,
+    ).run(id);
+  }
+
+  it('sert le plus petit d’abord, à date égale', () => {
+    vu(1, '2026-08-10T00:00:00.000Z', 9000);
+    vu(2, '2026-08-10T00:00:00.000Z', 1000);
+    vu(3, '2026-08-10T00:00:00.000Z', 5000);
+    subtitleQueue(db).enqueue(
+      [1, 2, 3].map((id) => ({ targetType: 'media_file' as const, targetId: id, fingerprint: 'x' })),
+    );
+
+    expect(subtitleQueue(db).claim(3).map((j) => j.target_id)).toEqual([2, 3, 1]);
+  });
+
+  it('LE DÉFAUT MESURÉ : un fichier inscrit APRÈS coup passe devant', () => {
+    /*
+     * Avec « ORDER BY job.id », le nouveau venu recevait le plus grand
+     * identifiant et passait en dernier — 1 449 travaux d'attente mesurés sur le
+     * NAS, près de sept heures. C'est l'inverse de la règle de la file.
+     */
+    vu(1, '2026-08-10T00:00:00.000Z', 1000);
+    vu(2, '2026-08-10T00:00:00.000Z', 2000);
+    const queue = subtitleQueue(db);
+    queue.enqueue(
+      [1, 2].map((id) => ({ targetType: 'media_file' as const, targetId: id, fingerprint: 'x' })),
+    );
+
+    // Le film ajouté ce soir, inscrit bien après les deux autres.
+    vu(3, '2026-08-13T21:00:00.000Z', 8000);
+    queue.enqueue([{ targetType: 'media_file', targetId: 3, fingerprint: 'x' }]);
+
+    // Il a le plus grand job.id ET la plus grosse taille : seule sa date le fait passer.
+    const ids = queue.claim(3).map((j) => j.target_id);
+    expect(ids[0]).toBe(3);
+    expect(ids).toEqual([3, 1, 2]);
+  });
+
+  it('ne perd pas un travail dont la cible a disparu de media_file', () => {
+    /*
+     * Avec une jointure stricte, ce travail sortait de la sélection et n'aurait
+     * plus JAMAIS été pris : la file se serait bloquée sans rien dire.
+     */
+    vu(1, '2026-08-10T00:00:00.000Z', 1000);
+    const queue = subtitleQueue(db);
+    queue.enqueue([
+      { targetType: 'media_file', targetId: 1, fingerprint: 'x' },
+      { targetType: 'media_file', targetId: 999, fingerprint: 'x' },
+    ]);
+
+    const ids = queue.claim(5).map((j) => j.target_id);
+    expect(ids).toContain(999);
+    expect(ids).toEqual([1, 999]); // l'orphelin passe en dernier, mais il passe
+  });
+
+  it('laisse les autres files sur leur ordre d’arrivée', () => {
+    // `probe` et `metadata` reçoivent tout d'un coup : rien à changer pour elles.
+    vu(1, '2026-08-10T00:00:00.000Z', 9000);
+    vu(2, '2026-08-13T00:00:00.000Z', 1000);
+    const probe = new JobQueue(db, 'probe');
+    probe.enqueue([
+      { targetType: 'media_file', targetId: 1, fingerprint: 'x' },
+      { targetType: 'media_file', targetId: 2, fingerprint: 'x' },
+    ]);
+
+    expect(probe.claim(2).map((j) => j.target_id)).toEqual([1, 2]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('readySql — négeable sans mentir', () => {
+  /** Le compte de lignes que rend une clause donnée. */
+  function compte(clause: string): number {
+    return (db.prepare(`SELECT COUNT(*) AS n FROM media_file f WHERE ${clause}`).get() as { n: number }).n;
+  }
+
+  it('rend 0 et non NULL quand l’empreinte est absente', () => {
+    fichier(1);
+    const row = db.prepare(`SELECT ${readySql('f')} AS pret FROM media_file f WHERE f.id = 1`).get();
+    expect(row).toEqual({ pret: 0 }); // et surtout PAS { pret: null }
+  });
+
+  it('LE PIÈGE : « NOT (readySql) » trouve bien les fichiers non préparés', () => {
+    /*
+     * Avec une comparaison qui rend NULL, cette requête rendait ZÉRO ligne sans
+     * lever d'erreur — c'est ainsi que je suis passé à côté de 1 800 fichiers en
+     * production.
+     */
+    fichier(1); // non préparé
+    fichier(2);
+    markReady(db, 2);
+
+    expect(compte(`NOT (${readySql('f')})`)).toBe(1);
+    expect(compte(readySql('f'))).toBe(1);
+    // Les deux moitiés couvrent bien la totalité : aucune ligne ne s'évapore.
+    expect(compte(`NOT (${readySql('f')})`) + compte(readySql('f'))).toBe(2);
+  });
+
+  it('reste juste après invalidation', () => {
+    const media = fichier(1);
+    markReady(db, 1);
+    expect(compte(readySql('f'))).toBe(1);
+
+    // Le fichier est réencodé : nouvelle taille, l'empreinte ne correspond plus.
+    db.prepare('UPDATE media_file SET size_bytes = ? WHERE id = 1').run(media.sizeBytes + 1);
+    expect(compte(readySql('f'))).toBe(0);
+    expect(compte(`NOT (${readySql('f')})`)).toBe(1);
   });
 });

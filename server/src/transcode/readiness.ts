@@ -29,7 +29,29 @@ export function fingerprintOf(sizeBytes: number, mtimeMs: number): string {
  * cinq requêtes finit par diverger dans l'une des cinq.
  */
 export function readySql(alias: string): string {
-  return `${alias}.subtitles_fingerprint = ${alias}.size_bytes || '-' || CAST(${alias}.mtime_ms AS INTEGER)`;
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * LE COALESCE N'EST PAS COSMÉTIQUE : IL REND L'EXPRESSION NÉGEABLE.
+   *
+   * Sans lui, une empreinte NULL — l'état de tout fichier non préparé, donc le
+   * cas le plus courant — fait rendre NULL à la comparaison. `NOT (NULL)` vaut
+   * NULL, et une clause `WHERE NOT (readySql)` écarte alors TOUTES les lignes
+   * sans lever la moindre erreur.
+   *
+   * Les trois usages en place étaient sûrs par construction (`CASE WHEN`, `= 1`,
+   * `OR` dans un `WHERE`), mais je suis tombé dans le piège en écrivant une
+   * requête de diagnostic : elle a rendu zéro ligne sur 1 800 fichiers, en
+   * silence. Une expression dont la négation ment est un piège posé pour le
+   * prochain qui l'emploiera — on le désamorce ici, pas chez les appelants.
+   *
+   * La chaîne de droite ne peut pas être NULL : `size_bytes` et `mtime_ms` sont
+   * déclarées NOT NULL.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  return (
+    `COALESCE(${alias}.subtitles_fingerprint, '') = ` +
+    `${alias}.size_bytes || '-' || CAST(${alias}.mtime_ms AS INTEGER)`
+  );
 }
 
 /** Marque les sous-titres d'un fichier comme prêts, dans sa version courante. */

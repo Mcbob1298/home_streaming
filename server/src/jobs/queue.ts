@@ -54,11 +54,46 @@ export interface QueueCounts {
   total: number;
 }
 
+/**
+ * Comment `claim()` choisit le PROCHAIN travail.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * `ORDER BY job.id` N'EST PAS UN ORDRE, C'EST UN ORDRE D'ARRIVÉE.
+ *
+ * Il coïncide avec l'ordre voulu tant que tout le travail est inscrit d'un seul
+ * coup : les identifiants suivent alors la liste qu'on a triée avant de
+ * l'inscrire. Mesuré sur le NAS, les six travaux suivants sortaient bien par
+ * taille croissante — 1431, 1433, 1433, 1434, 1435, 1439 Mo.
+ *
+ * Il devient FAUX dès qu'un travail arrive plus tard. Un fichier ajouté pendant
+ * une passe reçoit le plus grand identifiant et passe donc en DERNIER : mesuré
+ * à 1 449 travaux d'attente, soit près de sept heures — alors que la règle de la
+ * file est « les ajouts récents d'abord », écrite exactement pour ce cas.
+ *
+ * L'ordre est donc porté par la file qui en a besoin, et calculé au moment de
+ * CHOISIR, pas au moment d'inscrire.
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * Les deux fragments sont des constantes du code, jamais une entrée : ils sont
+ * interpolés dans le SQL, ce qui interdit d'y faire passer quoi que ce soit qui
+ * vienne d'une requête.
+ */
+export interface ClaimOrder {
+  /** Jointure dont l'ordre a besoin. Vide quand `job` se suffit. */
+  join: string;
+  /** La clause ORDER BY, sur les alias `j` (job) et ceux de la jointure. */
+  orderBy: string;
+}
+
+/** Ordre d'arrivée : ce que font les files dont le travail vient d'un seul lot. */
+export const BY_ARRIVAL: ClaimOrder = { join: '', orderBy: 'j.id' };
+
 export class JobQueue {
   constructor(
     private readonly db: Db,
     /** Nom de la file : `probe`, `metadata`… */
     readonly name: string,
+    private readonly order: ClaimOrder = BY_ARRIVAL,
   ) {}
 
   /**
@@ -215,11 +250,18 @@ export class JobQueue {
    *
    * La réservation est faite dans une transaction : deux appels concurrents ne
    * peuvent pas prendre le même travail.
+   *
+   * L'ordre vient de `this.order` — voir `ClaimOrder` : trier par `job.id` par
+   * défaut suffit aux files dont tout le travail arrive d'un coup, mais pas à
+   * celles où l'ordre est une garantie tenue dans le temps.
    */
   claim(limit: number): JobRow[] {
     const select = this.db.prepare(
-      `SELECT id, queue, target_type, target_id, status, attempts, last_error, fingerprint
-       FROM job WHERE queue = ? AND status = 'pending' ORDER BY id LIMIT ?`,
+      `SELECT j.id, j.queue, j.target_type, j.target_id, j.status, j.attempts, j.last_error, j.fingerprint
+       FROM job j ${this.order.join}
+       WHERE j.queue = ? AND j.status = 'pending'
+       ORDER BY ${this.order.orderBy}
+       LIMIT ?`,
     );
     const markRunning = this.db.prepare(
       `UPDATE job SET status = 'running', attempts = attempts + 1, updated_at = ? WHERE id = ?`,

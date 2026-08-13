@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { convertToVtt, isConvertible, languageLabel, subtitleLabel, toVtt } from './vtt.js';
+import { cleanCueText, convertToVtt, isConvertible, languageLabel, subtitleLabel, toVtt } from './vtt.js';
 
 describe('isConvertible', () => {
   it('accepte SRT et VTT', () => {
@@ -139,6 +139,79 @@ describe('subtitleLabel', () => {
   it('signale les deux mentions', () => {
     expect(subtitleLabel({ language: 'eng', forced: 1, hearingImpaired: 1 })).toBe(
       'Anglais (forcés, sourds et malentendants)',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('cleanCueText — le balisage qui fuyait dans le texte affiché', () => {
+  it('retire le positionnement ASS glissé dans du SRT', () => {
+    // Relevé 24 514 fois en production, affiché littéralement par le navigateur.
+    expect(cleanCueText('{\\an8}"QUI A VOLÉ MON BAS DE LAINE ?"')).toBe('"QUI A VOLÉ MON BAS DE LAINE ?"');
+    expect(cleanCueText('{\\an1}- Comme vous le voyez ici,')).toBe('- Comme vous le voyez ici,');
+    expect(cleanCueText('{\\a6}MERCI POUR LA CARTE')).toBe('MERCI POUR LA CARTE');
+  });
+
+  it('retire aussi les blocs de composition plus riches', () => {
+    expect(cleanCueText('{\\fad(2000,1200)\\1a&HFF}Texte')).toBe('Texte');
+    expect(cleanCueText('{\\pos(192,230)}Ici{\\r}et là')).toBe('Iciet là');
+  });
+
+  it('ne touche PAS aux accolades qui sont du vrai texte', () => {
+    // Sans la barre inverse, ce n'est pas du balisage : c'est ce qu'on affiche.
+    expect(cleanCueText('{Musique douce}')).toBe('{Musique douce}');
+    expect(cleanCueText('Tape { pour ouvrir')).toBe('Tape { pour ouvrir');
+  });
+
+  it('garde l’italique, le gras et le souligné', () => {
+    // 101 778 occurrences : WebVTT les rend nativement.
+    expect(cleanCueText('<i>Très cher lecteur.</i>')).toBe('<i>Très cher lecteur.</i>');
+    expect(cleanCueText('<b>ARC DE L’EXAMEN</b>')).toBe('<b>ARC DE L’EXAMEN</b>');
+    expect(cleanCueText('<u>souligné</u>')).toBe('<u>souligné</u>');
+  });
+
+  it('traduit une couleur connue en classe WebVTT', () => {
+    // La couleur désigne QUI parle dans les sous-titres pour sourds : la perdre
+    // rendrait le dialogue ambigu.
+    expect(cleanCueText('<font color="magenta">Musique entraînante</font>')).toBe(
+      '<c.magenta>Musique entraînante</c>',
+    );
+    expect(cleanCueText("<font color='yellow'>Jaune</font>")).toBe('<c.yellow>Jaune</c>');
+  });
+
+  it('garde le texte quand la couleur n’est pas traduisible', () => {
+    expect(cleanCueText('<font color="#FFAA00">Orange</font>')).toBe('<c>Orange</c>');
+  });
+
+  it('retire les balises inconnues sans manger leur contenu', () => {
+    expect(cleanCueText('<span style="bodyStyle"> Lucifer...</span>')).toBe(' Lucifer...');
+    expect(cleanCueText('<div><p>Texte</p></div>')).toBe('Texte');
+  });
+
+  it('laisse une ligne ordinaire intacte', () => {
+    expect(cleanCueText('Rien à nettoyer ici.')).toBe('Rien à nettoyer ici.');
+    expect(cleanCueText('')).toBe('');
+  });
+});
+
+describe('toVtt — le nettoyage porte sur le texte, pas sur les horodatages', () => {
+  it('nettoie les répliques d’un SRT', () => {
+    const srt = '1\n00:27:55,976 --> 00:27:57,686\n{\\an8}DAVIS & MAIN\n';
+    expect(toVtt(srt)).toBe('WEBVTT\n\n1\n00:27:55.976 --> 00:27:57.686\nDAVIS & MAIN\n');
+  });
+
+  it('ne touche pas à une ligne d’horodatage qui contiendrait des accolades', () => {
+    // Garde-fou : un horodatage n'est jamais réécrit par le nettoyage.
+    const vtt = 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{\\an8}Texte\n';
+    expect(toVtt(vtt)).toContain('00:00:01.000 --> 00:00:02.000');
+    expect(toVtt(vtt)).toContain('\nTexte\n');
+  });
+
+  it('nettoie aussi une source déjà en WebVTT', () => {
+    // Une piste embarquée au codec `webvtt` peut porter le même bruit.
+    expect(toVtt('WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n{\\an2}Bas de l’écran\n')).toContain(
+      '\nBas de l’écran\n',
     );
   });
 });

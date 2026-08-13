@@ -23,7 +23,7 @@ import { ImageDownloader } from './metadata/images.js';
 import { TmdbClient } from './metadata/tmdb.js';
 import type { EnrichContext } from './metadata/enrich.js';
 import { SessionManager } from './transcode/manager.js';
-import { SubtitlePreparation, setPreparation } from './transcode/subtitleQueue.js';
+import { applyConverterVersion, SubtitlePreparation, setPreparation } from './transcode/subtitleQueue.js';
 import {
   describeCapabilities,
   detectCapabilities,
@@ -192,6 +192,19 @@ async function main(): Promise<void> {
      * plan. Sur une passe de seize heures, c'est ce qui évite de découvrir au
      * matin qu'elle s'est arrêtée à trois heures.
      */
+    /*
+     * Le convertisseur a-t-il changé depuis la dernière fois ? Si oui, ce qu'il
+     * a produit est à refaire — corriger la conversion ne corrige rien pour les
+     * fichiers déjà écrits.
+     */
+    const converti = applyConverterVersion(db, subtitleCacheDir);
+    if (converti.invalidated > 0) {
+      app.log.info(
+        { fichiers: converti.invalidated, ancienneVersion: converti.from },
+        'convertisseur de sous-titres mis à jour : les fichiers déjà préparés sont à refaire',
+      );
+    }
+
     preparation = new SubtitlePreparation(db, {
       ffmpegBinary: capabilities.binary,
       cacheDir: subtitleCacheDir,

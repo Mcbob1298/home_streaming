@@ -18,11 +18,23 @@
  *   • un suivi en OCTETS, seule mesure qui veuille dire quelque chose ici.
  * ═════════════════════════════════════════════════════════════════════════════
  */
+import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
+
 import type { Db } from '../db/index.js';
-import { JobQueue } from '../jobs/queue.js';
-import { fingerprintOf, markPending, markReady } from './readiness.js';
+import { JobQueue, type ClaimOrder } from '../jobs/queue.js';
+import { CONVERTER_VERSION } from '../playback/vtt.js';
+import {
+  LOCK_REFRESH_MS,
+  acquireDrainLock,
+  refreshDrainLock,
+  releaseDrainLock,
+  type LockAttempt,
+} from './drainLock.js';
+import { fingerprintOf, markPending, markReady, readySql } from './readiness.js';
 import {
   INTERRUPTED,
+  cacheDirOf,
   extractSubtitles,
   extractableTracksByFile,
   extractableTracksOf,
@@ -40,8 +52,30 @@ const CONCURRENCY = 1;
 /** Nombre de fichiers sur lesquels le débit est moyenné, par racine. */
 const THROUGHPUT_WINDOW = 5;
 
+/**
+ * L'ordre de la file des sous-titres, appliqué à CHAQUE sélection.
+ *
+ * Les mêmes critères que `filesToPrepare` — récents d'abord, puis les plus
+ * petits — mais évalués au moment de choisir. C'est ce qui fait qu'un fichier
+ * ajouté ce soir passe devant les 1 449 travaux déjà en attente au lieu de les
+ * suivre.
+ *
+ * LEFT JOIN, et non JOIN : une cible sans ligne dans `media_file` sortirait de
+ * la sélection et son travail ne serait plus jamais pris — une file qui se
+ * bloque en silence. Avec le LEFT JOIN elle passe simplement en dernier
+ * (SQLite classe NULL comme la plus petite valeur, donc en fin de tri DESC).
+ *
+ * `j.id` en dernier critère départage deux fichiers de même date et même
+ * taille : sans lui, l'ordre dépendrait de la façon dont SQLite parcourt la
+ * table, et ne serait pas reproductible.
+ */
+const SUBTITLE_ORDER: ClaimOrder = {
+  join: "LEFT JOIN media_file f ON f.id = j.target_id AND j.target_type = 'media_file'",
+  orderBy: 'f.first_seen_at DESC, f.size_bytes ASC, j.id',
+};
+
 export function subtitleQueue(db: Db): JobQueue {
-  return new JobQueue(db, SUBTITLE_QUEUE);
+  return new JobQueue(db, SUBTITLE_QUEUE, SUBTITLE_ORDER);
 }
 
 const MEDIA_COLUMNS = `
@@ -203,6 +237,69 @@ export function workTotals(db: Db): { files: number; filesDone: number; bytes: n
     .get(SUBTITLE_QUEUE) as { files: number; filesDone: number; bytes: number; bytesDone: number };
 }
 
+/**
+ * Remet en préparation ce qu'une ANCIENNE version du convertisseur a produit.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * CORRIGER LE CONVERTISSEUR NE CORRIGE PAS LA BIBLIOTHÈQUE.
+ *
+ * C'est la contrepartie du modèle : un WebVTT est écrit une fois, puis servi
+ * comme un fichier statique. Le jour où le nettoyage des balises est arrivé,
+ * 881 fichiers sur 1 993 portaient encore « {\anN} » en clair — et rien ne
+ * pouvait le détecter, l'empreinte du fichier SOURCE n'ayant pas bougé.
+ *
+ * Le cache est EFFACÉ et non contourné par une clé versionnée : une clé
+ * versionnée laisserait les anciens répertoires sur le disque à jamais, et
+ * surtout `extractSubtitles` s'arrête dès que les `.vtt` attendus existent — il
+ * ne referait donc rien.
+ *
+ * L'empreinte est remise à NULL EN MÊME TEMPS. Effacer le cache sans elle
+ * recréerait exactement le défaut corrigé plus tôt : un fichier qui se déclare
+ * prêt et dont chaque piste répond 409.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export function applyConverterVersion(
+  db: Db,
+  cacheRoot: string,
+): { invalidated: number; from: string | null } {
+  const KEY = 'converter_version';
+  const stored = (db.prepare('SELECT value FROM meta WHERE key = ?').get(KEY) as { value: string } | undefined)?.value;
+
+  if (stored === String(CONVERTER_VERSION)) return { invalidated: 0, from: null };
+
+  // Seuls les fichiers DÉJÀ préparés portent du texte produit par l'ancienne
+  // version. Les autres attendent encore : ils sortiront corrigés.
+  const cibles = db
+    .prepare(
+      `SELECT ${MEDIA_COLUMNS} FROM media_file f
+       WHERE f.present = 1 AND ${readySql('f')}
+         AND EXISTS (SELECT 1 FROM embedded_subtitle s
+                     WHERE s.media_file_id = f.id AND s.is_image_based = 0 AND s.codec IS NOT NULL)`,
+    )
+    .all() as QueuedFile[];
+
+  const run = db.transaction(() => {
+    for (const file of cibles) markPending(db, file.id);
+  });
+  run();
+
+  for (const file of cibles) {
+    // Le cache doit partir, sinon l'extraction constate que tout est là.
+    rmSync(cacheDirOf(cacheRoot, file), { recursive: true, force: true });
+  }
+
+  subtitleQueue(db).requeueTargets(
+    cibles.map((file) => ({
+      targetType: 'media_file' as const,
+      targetId: file.id,
+      fingerprint: fingerprintOf(file.sizeBytes, file.mtimeMs),
+    })),
+  );
+
+  db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run(KEY, String(CONVERTER_VERSION));
+  return { invalidated: cibles.length, from: stored ?? null };
+}
+
 /** Nombre d'échecs affichés. Au-delà, la liste cesse d'être lisible. */
 const FAILURE_LIMIT = 20;
 
@@ -314,6 +411,16 @@ export class SubtitlePreparation {
 
   /** Tue le ffmpeg en cours quand la passe est mise en pause. */
   private abort: AbortController | null = null;
+
+  /**
+   * Identifie CETTE passe auprès du verrou de drainage.
+   *
+   * Un PID ne suffit pas : après un redémarrage, le système peut réattribuer le
+   * même. Le jeton distingue deux passes qui se succèdent sur un même PID.
+   */
+  private readonly token = `${process.pid}-${randomUUID()}`;
+  private lockTimer: NodeJS.Timeout | null = null;
+  private blocked = false;
   private current: { mediaFileId: number; fileName: string; sizeBytes: number } | null = null;
 
   /**
@@ -350,8 +457,19 @@ export class SubtitlePreparation {
    * seize heures, un redémarrage du conteneur est probable — la reprise ne doit
    * pas attendre qu'une requête réveille le travailleur.
    */
-  start(): void {
+  start(): boolean {
     this.stopped = false;
+
+    /*
+     * Le verrou AVANT `requeueStale()`, et c'est tout l'objet du verrou.
+     *
+     * `requeueStale()` remet en attente tous les travaux `running` : sans cette
+     * garde, lancer « npm run subtitles » pendant que le serveur tourne
+     * arracherait au serveur l'extraction en cours, et les deux ffmpeg se
+     * partageraient le disque.
+     */
+    if (!this.acquireDrain().acquired) return false;
+
     const reprises = subtitleQueue(this.db).requeueStale();
     if (reprises > 0) {
       this.options.onLog('préparation reprise après interruption', { travaux: reprises });
@@ -360,13 +478,55 @@ export class SubtitlePreparation {
     this.timer = setInterval(() => void this.drain(), 10_000);
     this.timer.unref();
     void this.drain();
+    return true;
   }
 
   stop(): void {
     this.stopped = true;
     if (this.timer !== null) clearInterval(this.timer);
     this.timer = null;
+    if (this.lockTimer !== null) clearInterval(this.lockTimer);
+    this.lockTimer = null;
     this.abort?.abort();
+    releaseDrainLock(this.db, this.token);
+  }
+
+  /**
+   * Prend le droit de drainer, et le garde.
+   *
+   * Publique parce que `npm run subtitles` ne passe PAS par `start()` : il
+   * appelle `runOnce()` dans sa propre boucle, pour afficher l'avancement à
+   * chaque fichier. Sans cette méthode il aurait contourné le verrou — soit
+   * exactement le cas que le verrou existe pour empêcher.
+   */
+  acquireDrain(): LockAttempt {
+    const prise = acquireDrainLock(this.db, this.token, Date.now());
+
+    if (!prise.acquired) {
+      const { pid, sinceSeconds } = prise.heldBy as { pid: number; sinceSeconds: number };
+      this.options.onLog('préparation déjà en cours ailleurs, celle-ci ne démarre pas', {
+        pid,
+        depuisSecondes: sinceSeconds,
+      });
+      this.blocked = true;
+      return prise;
+    }
+
+    this.blocked = false;
+    if (this.lockTimer === null) {
+      // Le rafraîchissement tourne sur son propre rythme : une extraction de
+      // seize minutes ne doit pas laisser expirer le verrou qu'elle utilise.
+      this.lockTimer = setInterval(() => {
+        if (!refreshDrainLock(this.db, this.token, Date.now())) this.stop();
+      }, LOCK_REFRESH_MS);
+      this.lockTimer.unref();
+    }
+    return prise;
+  }
+
+  /** Le verrou est-il tenu par quelqu'un d'autre ? La page le dit alors. */
+  get blockedByAnother(): boolean {
+    return this.blocked;
   }
 
   /** Réveil immédiat, après une inscription venue d'un scan. */

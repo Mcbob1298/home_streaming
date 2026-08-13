@@ -316,10 +316,16 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
        * l'affichage et le clic — on le dit franchement plutôt que de lancer une
        * extraction de seize minutes dans une requête HTTP.
        */
+      /*
+       * Le message désigne la PAGE, pas la commande. Renvoyer vers un terminal
+       * quand un bouton existe fait ouvrir un terminal pour rien — et la page
+       * dit en plus où en est la préparation, ce que la commande ne montre
+       * qu'une fois relancée.
+       */
       return reply.code(409).send({
         error:
-          'Les sous-titres de ce fichier ne sont pas préparés. Relancer « npm run subtitles » ' +
-          'pour les produire.',
+          'Les sous-titres de ce fichier ne sont pas encore préparés. La page « Préparation » ' +
+          'montre l’avancement et permet de relancer ce qui manque.',
       });
     }
 
