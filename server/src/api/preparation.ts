@@ -18,8 +18,10 @@ import {
   enqueueFiles,
   filesToPrepare,
   preparation,
+  recentFailures,
   requeueMissing,
   subtitleQueue,
+  workTotals,
 } from '../transcode/subtitleQueue.js';
 
 export function registerPreparationRoutes(app: FastifyInstance, db: Db): void {
@@ -36,19 +38,21 @@ export function registerPreparationRoutes(app: FastifyInstance, db: Db): void {
 
     const passe = preparation();
     if (passe === null) {
-      const counts = subtitleQueue(db).counts();
+      // Même population que la passe elle-même : sans ffmpeg on ne peut rien
+      // préparer, mais on doit dire la vérité sur ce qui reste à faire.
+      const totals = workTotals(db);
       return {
         available: false,
         running: false,
         paused: false,
         current: null,
-        filesDone: counts.done + counts.skipped,
-        filesTotal: counts.total,
-        bytesDone: 0,
-        bytesTotal: 0,
+        filesDone: totals.filesDone,
+        filesTotal: totals.files,
+        bytesDone: totals.bytesDone,
+        bytesTotal: totals.bytes,
         throughput: null,
         remainingSeconds: null,
-        failures: [],
+        failures: recentFailures(db),
       };
     }
 

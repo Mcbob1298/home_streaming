@@ -96,7 +96,16 @@ export function PreparationPage() {
       <Titre />
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Chiffre label="Œuvres préparées" valeur={`${status.filesDone} / ${status.filesTotal}`} />
+        <Chiffre
+          label="Fichiers préparés"
+          valeur={`${status.filesDone} / ${status.filesTotal}`}
+          /*
+           * Même population que les octets. Les compter séparément annonçait
+           * deux avancements différents — 47 % ici, 14 % sur la barre — parce
+           * que les fichiers sans piste texte se terminent instantanément.
+           */
+          note="ceux qui portent des sous-titres à extraire"
+        />
         <Chiffre
           label="Volume traité"
           valeur={`${octets(status.bytesDone)} / ${octets(status.bytesTotal)}`}

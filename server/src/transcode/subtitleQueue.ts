@@ -161,6 +161,48 @@ export function filesMissingAssets(db: Db, cacheRoot: string): { file: QueuedFil
   return manquants;
 }
 
+/**
+ * Les fichiers qu'on OUVRE réellement : ceux qui portent une piste texte.
+ *
+ * Un fichier sans piste texte n'est jamais lu par ffmpeg — il est marqué prêt
+ * instantanément. Il ne représente aucun travail.
+ */
+const LUS = `EXISTS (SELECT 1 FROM embedded_subtitle s
+                     WHERE s.media_file_id = f.id AND s.is_image_based = 0 AND s.codec IS NOT NULL)`;
+
+/**
+ * L'avancement, fichiers ET octets, sur UNE SEULE population.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * DEUX COMPTEURS SUR DEUX POPULATIONS ANNONCENT DEUX AVANCEMENTS.
+ *
+ * Les octets excluaient déjà les fichiers jamais lus — les inclure gonflait le
+ * total à 5,78 Tio au lieu de 5,13 et faussait surtout le temps restant, qui
+ * divisait par le débit des octets qu'on n'allait pas lire. Mais les FICHIERS,
+ * eux, comptaient toujours tout le monde.
+ *
+ * Résultat mesuré en production : « 1 324 / 2 796 » soit 47,4 % pendant que la
+ * barre affichait 14,2 %. Au démarrage c'était pire — les 490 fichiers sans
+ * piste texte se terminent instantanément, et la page annonçait « 490 œuvres
+ * préparées » avec une barre à zéro.
+ *
+ * Une seule population, donc, et c'est celle du travail réel. Les 490 autres
+ * n'apparaissent nulle part : ils ne demandent rien.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export function workTotals(db: Db): { files: number; filesDone: number; bytes: number; bytesDone: number } {
+  return db
+    .prepare(
+      `SELECT COUNT(*) AS files,
+              COALESCE(SUM(CASE WHEN j.status IN ('done','skipped') THEN 1 ELSE 0 END), 0) AS filesDone,
+              COALESCE(SUM(f.size_bytes), 0) AS bytes,
+              COALESCE(SUM(CASE WHEN j.status IN ('done','skipped') THEN f.size_bytes ELSE 0 END), 0) AS bytesDone
+       FROM job j JOIN media_file f ON f.id = j.target_id
+       WHERE j.queue = ? AND j.target_type = 'media_file' AND ${LUS}`,
+    )
+    .get(SUBTITLE_QUEUE) as { files: number; filesDone: number; bytes: number; bytesDone: number };
+}
+
 /** Nombre d'échecs affichés. Au-delà, la liste cesse d'être lisible. */
 const FAILURE_LIMIT = 20;
 
@@ -382,30 +424,7 @@ export class SubtitlePreparation {
    * la taille : « 500 sur 2306 » ne dit rien s'il reste le fichier de 94 Go.
    */
   status(): PreparationStatus {
-    const counts = subtitleQueue(this.db).counts();
-
-    /*
-     * ─────────────────────────────────────────────────────────────────────────
-     * ON NE COMPTE QUE LES OCTETS QU'ON VA RÉELLEMENT LIRE.
-     *
-     * Tous les fichiers présents sont inscrits, mais seuls ceux qui portent une
-     * piste texte sont ouverts par ffmpeg : les autres sont marqués prêts sans
-     * qu'on les touche. Les inclure dans le total gonflait l'avancement de
-     * 5,78 Tio au lieu de 5,13, et surtout faussait le temps restant — il
-     * divisait par le débit des octets qui n'allaient jamais être lus.
-     * ─────────────────────────────────────────────────────────────────────────
-     */
-    const LUS = `EXISTS (SELECT 1 FROM embedded_subtitle s
-                         WHERE s.media_file_id = f.id AND s.is_image_based = 0 AND s.codec IS NOT NULL)`;
-
-    const totals = this.db
-      .prepare(
-        `SELECT COALESCE(SUM(f.size_bytes), 0) AS total,
-                COALESCE(SUM(CASE WHEN j.status IN ('done','skipped') THEN f.size_bytes ELSE 0 END), 0) AS done
-         FROM job j JOIN media_file f ON f.id = j.target_id
-         WHERE j.queue = ? AND j.target_type = 'media_file' AND ${LUS}`,
-      )
-      .get(SUBTITLE_QUEUE) as { total: number; done: number };
+    const totals = workTotals(this.db);
 
     // Octets restants par racine, chacun divisé par le débit de SA racine.
     const parRacine = this.db
@@ -439,10 +458,10 @@ export class SubtitlePreparation {
       running: this.busy && !this.pausedFlag,
       paused: this.pausedFlag,
       current: this.current,
-      filesDone: counts.done + counts.skipped,
-      filesTotal: counts.total,
-      bytesDone: totals.done,
-      bytesTotal: totals.total,
+      filesDone: totals.filesDone,
+      filesTotal: totals.files,
+      bytesDone: totals.bytesDone,
+      bytesTotal: totals.bytes,
       throughput: global.length === 0 ? null : global.reduce((s, v) => s + v, 0) / global.length,
       remainingSeconds,
       failures: recentFailures(this.db),

@@ -31,6 +31,7 @@ import {
   requeueMissing,
   subtitleQueue,
   verdictExtraction,
+  workTotals,
 } from './subtitleQueue.js';
 
 let db: Db;
@@ -388,5 +389,54 @@ describe('requeueTargets', () => {
 
     expect(probe.counts()).toMatchObject({ done: 1 });
     expect(soustitres.counts()).toMatchObject({ pending: 1, total: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('workTotals — une seule population pour les fichiers ET les octets', () => {
+  /** Inscrit un fichier dans la file, puis termine son travail si demandé. */
+  function inscrire(id: number, fini: boolean): void {
+    const queue = subtitleQueue(db);
+    queue.enqueue([{ targetType: 'media_file', targetId: id, fingerprint: 'x' }]);
+    if (!fini) return;
+    const jobs = queue.claim(10);
+    const job = jobs.find((j) => j.target_id === id);
+    if (job !== undefined) queue.complete(job.id);
+  }
+
+  it('ignore les fichiers sans piste texte, des deux côtés', () => {
+    /*
+     * LE DÉFAUT MESURÉ EN PRODUCTION : les fichiers sans piste texte se
+     * terminent instantanément. Comptés dans les fichiers mais pas dans les
+     * octets, ils annonçaient « 490 œuvres préparées » avec une barre à zéro.
+     */
+    fichier(1, { sizeBytes: 1000, tracks: [{ streamIndex: 2, codec: 'subrip' }] });
+    fichier(2, { sizeBytes: 2000, tracks: [{ streamIndex: 2, codec: 'ass' }] });
+    fichier(3, { sizeBytes: 9000 }); // aucune piste texte : aucun travail
+    inscrire(3, true); // il finit tout de suite, comme en production
+    inscrire(1, false);
+    inscrire(2, false);
+
+    // #3 n'apparaît nulle part : ni au numérateur, ni au dénominateur.
+    expect(workTotals(db)).toEqual({ files: 2, filesDone: 0, bytes: 3000, bytesDone: 0 });
+  });
+
+  it('avance des deux côtés au même rythme', () => {
+    fichier(1, { sizeBytes: 1000, tracks: [{ streamIndex: 2, codec: 'subrip' }] });
+    fichier(2, { sizeBytes: 3000, tracks: [{ streamIndex: 2, codec: 'ass' }] });
+    inscrire(1, true);
+    inscrire(2, false);
+
+    const t = workTotals(db);
+    expect(t).toEqual({ files: 2, filesDone: 1, bytes: 4000, bytesDone: 1000 });
+    // Les deux fractions portent sur la même population : 1/2 des fichiers,
+    // 1000/4000 des octets. Elles peuvent différer — mais plus par construction.
+    expect(t.filesDone / t.files).toBeGreaterThan(0);
+    expect(t.bytesDone / t.bytes).toBeGreaterThan(0);
+  });
+
+  it('rend zéro sur une file vide sans planter', () => {
+    expect(workTotals(db)).toEqual({ files: 0, filesDone: 0, bytes: 0, bytesDone: 0 });
   });
 });
