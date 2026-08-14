@@ -34,9 +34,64 @@ export type SubtitleChoice =
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+/**
+ * Les Media Source Extensions sont-elles disponibles ?
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * C'EST CETTE QUESTION QUI DÉCIDE, PAS « SAIS-TU LIRE DU HLS ? ».
+ *
+ * `canPlayType('application/vnd.apple.mpegurl')` rend « maybe » dans Chrome —
+ * mesuré sur Chrome 151, Windows. « maybe » veut dire « peut-être », et le code
+ * le lisait comme « oui, nativement ». Chrome partait donc en lecture native,
+ * hls.js n'était JAMAIS chargé, et le changement de piste audio ne pouvait pas
+ * fonctionner : il n'y avait aucune instance à piloter. Vérifié dans le
+ * navigateur — zéro appel à `attachMedia`.
+ *
+ * La vidéo se lisait quand même, ce qui rendait le défaut invisible : Chrome
+ * sait désormais lire du HLS tout seul, mais il n'expose pas `audioTracks` sur
+ * l'élément vidéo. Une lecture qui marche, sans aucun moyen de changer de piste.
+ *
+ * On teste donc les MSE, ce dont hls.js a réellement besoin. Là où elles
+ * existent — Chrome, Firefox, Edge, Safari de bureau — hls.js pilote, et les
+ * pistes sont sélectionnables. Là où elles manquent — Safari iOS — la lecture
+ * native prend le relais, et c'est elle qui expose `audioTracks`.
+ *
+ * Le test se fait SANS charger hls.js : sur iPhone, télécharger 525 Ko pour ne
+ * pas s'en servir serait un mauvais échange.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+function supportsMse(): boolean {
+  return (
+    typeof MediaSource !== 'undefined' &&
+    typeof MediaSource.isTypeSupported === 'function' &&
+    MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"')
+  );
+}
+
 /** Le navigateur sait-il lire un manifeste HLS sans bibliothèque ? */
 function supportsNativeHls(video: HTMLVideoElement): boolean {
   return video.canPlayType('application/vnd.apple.mpegurl') !== '';
+}
+
+/**
+ * Les pistes audio que l'ÉLÉMENT expose, en lecture native.
+ *
+ * Déclarée à la main : `HTMLMediaElement.audioTracks` ne figure pas dans la
+ * bibliothèque standard de TypeScript, parce que peu de navigateurs
+ * l'implémentent. Safari le fait, et c'est le seul qui emprunte ce chemin.
+ */
+interface NativeAudioTrack {
+  enabled: boolean;
+}
+interface NativeAudioTrackList {
+  readonly length: number;
+  [index: number]: NativeAudioTrack;
+}
+
+function nativeAudioTracks(video: HTMLVideoElement | null): NativeAudioTrackList | null {
+  if (video === null) return null;
+  const liste = (video as unknown as { audioTracks?: NativeAudioTrackList }).audioTracks;
+  return liste ?? null;
 }
 
 /**
@@ -111,11 +166,17 @@ async function attachSource(
 
     case 'hls': {
       /*
-       * Safari et les navigateurs iOS lisent HLS nativement, et bien mieux que
-       * n'importe quelle bibliothèque : on les laisse faire, et on n'a alors
-       * même pas à télécharger hls.js.
+       * Sans MSE — Safari iOS — la lecture native est la seule voie, et c'est
+       * une bonne voie : elle expose `audioTracks` sur l'élément vidéo, donc
+       * les pistes restent sélectionnables.
        */
-      if (supportsNativeHls(video)) {
+      if (!supportsMse()) {
+        if (!supportsNativeHls(video)) {
+          throw new Error(
+            'Ce navigateur ne sait lire ni les manifestes HLS nativement, ni les ' +
+              'Media Source Extensions dont hls.js a besoin.',
+          );
+        }
         video.src = source.url;
         video.load();
         return detachNative;
@@ -129,16 +190,38 @@ async function attachSource(
       const { default: Hls } = await import('hls.js');
 
       if (!Hls.isSupported()) {
-        throw new Error(
-          'Ce navigateur ne sait lire ni les manifestes HLS nativement, ni les ' +
-            'Media Source Extensions dont hls.js a besoin.',
-        );
+        if (!supportsNativeHls(video)) {
+          throw new Error(
+            'Ce navigateur ne sait lire ni les manifestes HLS nativement, ni les ' +
+              'Media Source Extensions dont hls.js a besoin.',
+          );
+        }
+        video.src = source.url;
+        video.load();
+        return detachNative;
       }
 
       const hls = new Hls(HLS_CONFIG);
       hls.loadSource(source.url);
       hls.attachMedia(video);
       onController(hls as unknown as HlsController);
+
+      /*
+       * ───────────────────────────────────────────────────────────────────────
+       * LES RENDUS N'EXISTENT PAS ENCORE, ET PAS DAVANTAGE À MANIFEST_PARSED.
+       *
+       * Mesuré : `audioTracks` reste VIDE à la construction, après
+       * `attachMedia`, et même au moment de MANIFEST_PARSED (+19 ms) — elle ne
+       * se remplit qu'à AUDIO_TRACKS_UPDATED, une seconde et demie plus tard.
+       *
+       * Prévenir une seule fois, juste après `attachMedia`, revenait donc à
+       * prévenir quand il n'y a rien à choisir : la piste mémorisée n'était
+       * jamais appliquée à l'ouverture. On redit donc « voilà le contrôleur »
+       * quand les rendus arrivent, ce qui relance l'application du choix.
+       * ───────────────────────────────────────────────────────────────────────
+       */
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => onController(hls as unknown as HlsController));
+      hls.on(Hls.Events.MANIFEST_PARSED, () => onController(hls as unknown as HlsController));
 
       return () => {
         onController(null);
@@ -223,9 +306,12 @@ export function VideoSurface({
 
     void attachSource(video, source, (instance) => {
       controller.current = instance;
-      // Les rendus n'existent qu'une fois le manifeste analysé : le compteur
-      // relance l'application des choix quand l'instance change.
-      if (!cancelled) setAttached((count) => count + 1);
+      /*
+       * Le compteur relance l'application des choix. hls.js prévient PLUSIEURS
+       * fois — à l'attache, puis quand ses rendus existent enfin — et chaque
+       * avis doit compter : c'est le second qui applique la piste mémorisée.
+       */
+      if (!cancelled && instance !== null) setAttached((count) => count + 1);
     })
       .then((cleanup) => {
         if (cancelled) cleanup();
@@ -255,14 +341,27 @@ export function VideoSurface({
    * ───────────────────────────────────────────────────────────────────────────
    */
   useEffect(() => {
-    const hls = controller.current;
-    if (hls === null || hls.audioTracks.length === 0) return;
-
     const position = positionOf(audioTracks, audioStream);
-    if (position >= 0 && position < hls.audioTracks.length && hls.audioTrack !== position) {
-      hls.audioTrack = position;
+    if (position < 0) return;
+
+    const hls = controller.current;
+    if (hls !== null) {
+      if (position < hls.audioTracks.length && hls.audioTrack !== position) hls.audioTrack = position;
+      return;
     }
-  }, [audioStream, audioTracks, attached]);
+
+    /*
+     * Lecture native — Safari iOS. `audioTracks` y est une AudioTrackList : on
+     * active la piste voulue et on désactive les autres, l'élément se charge du
+     * reste. Chrome n'expose pas cette liste, mais Chrome passe par hls.js.
+     */
+    const liste = nativeAudioTracks(videoRef.current);
+    if (liste === null || position >= liste.length) return;
+    for (let i = 0; i < liste.length; i += 1) {
+      const piste = liste[i];
+      if (piste !== undefined) piste.enabled = i === position;
+    }
+  }, [audioStream, audioTracks, attached, videoRef]);
 
   /**
    * hls.js ne pilote AUCUN sous-titre : le manifeste n'en déclare pas.

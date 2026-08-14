@@ -1067,3 +1067,47 @@ transmettre au script imbriqué. L'option serait silencieusement perdue.
 - Les sous-titres ne sont rattachés qu'à une vidéo du **même dossier**.
 
 Notez vos idées dans `IDEAS.md`.
+
+### Le changement de piste audio, et pourquoi il ne marchait pas
+
+Deux défauts se cachaient l'un derrière l'autre, et le premier rendait le second
+invisible.
+
+**`canPlayType` ne répond pas par oui ou non.** Le lecteur choisissait la
+lecture native dès que `canPlayType('application/vnd.apple.mpegurl')` rendait
+autre chose que la chaîne vide. Or Chrome — mesuré sur Chrome 151, Windows —
+rend **`"maybe"`**. Chrome partait donc en lecture native et hls.js n'était
+jamais chargé : vérifié dans le navigateur, zéro appel à `attachMedia`. Il n'y
+avait aucune instance à piloter, donc aucun changement de piste possible.
+
+Le défaut était masqué parce que **la vidéo se lisait quand même** : Chrome sait
+désormais lire du HLS tout seul. Mais il n'expose pas `audioTracks` sur
+l'élément vidéo — une lecture qui marche, sans aucun moyen de changer de piste.
+
+La décision porte maintenant sur les **Media Source Extensions**, ce dont hls.js
+a réellement besoin, et le test se fait sans charger la bibliothèque : sur
+iPhone, télécharger 525 Ko pour ne pas s'en servir serait un mauvais échange.
+
+**Les rendus n'existent pas quand on croit.** Mesuré : `hls.audioTracks` reste
+vide à la construction, après `attachMedia`, et même à `MANIFEST_PARSED`
+(+19 ms). Elle ne se remplit qu'à `AUDIO_TRACKS_UPDATED`, une seconde et demie
+plus tard. Le composant appliquait la piste une seule fois, juste après
+l'attache — donc quand il n'y avait rien à choisir, et la piste mémorisée
+n'était jamais appliquée à l'ouverture.
+
+Délais mesurés entre le clic et la reprise du son, dans Chrome, sur le NAS :
+
+| Fichier | Mode | Bascule | Son repris |
+|---|---|---|---|
+| Avatar 4K HDR, 6 pistes | transcode | a-1 → a-6 | 1 581 ms |
+| Big Bang Theory | remux | a-4 → a-1 | 547 ms |
+| Big Bang Theory HEVC | transcode | a-2 → a-1 | 1 298 ms |
+| One Piece (fr/jp) | remux | a-2 → a-1 | 512 ms |
+
+La position est conservée dans les quatre cas : la lecture continue d'avancer,
+elle ne repart jamais du début.
+
+> **Piège de vérification.** Comparer le PREMIER segment de deux pistes ne prouve
+> rien : sur One Piece, les huit premières secondes des pistes française et
+> japonaise sont identiques dans la source — même intro. Le comparateur en a
+> conclu un défaut serveur qui n'existait pas. Comparer au-delà du générique.
