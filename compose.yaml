@@ -14,6 +14,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # ------------------------------------------------------------------------
+      # LA CIBLE DOIT ÊTRE NOMMÉE : « dev » est le DERNIER étage du Dockerfile.
+      #
+      # Sans cette ligne, Docker construit le dernier étage — donc l'image de
+      # développement — et la balise « home-streaming:latest ». Elle ne contient
+      # ni web/dist ni server/dist, et sa commande est « npm run dev », qui
+      # attend une source montée en volume que ce compose ne monte pas.
+      #
+      # Constaté en construisant pour de vrai : le conteneur aurait démarré sur
+      # une image sans interface ni serveur compilé.
+      # ------------------------------------------------------------------------
+      target: runtime
     image: home-streaming:latest
     container_name: home-streaming
     restart: unless-stopped
