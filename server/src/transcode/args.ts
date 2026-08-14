@@ -247,6 +247,66 @@ export interface AudioRunOptions {
  * La vidéo n'est PAS produite ici : `-vn`. Les images de couverture MJPEG du
  * fichier #365 seraient sinon prises pour un flux vidéo à réencoder.
  */
+/**
+ * Les arguments d'UNE sortie audio, sans l'entrée.
+ *
+ * Extrait pour que la sortie unique et la sortie multiple partagent exactement
+ * la même construction : downmix, débit, fréquence forcée, grille. Deux listes
+ * écrites séparément finiraient par diverger, et la divergence ne se verrait
+ * qu'à l'oreille.
+ */
+function sortieAudio(options: Omit<AudioRunOptions, 'input'>): string[] {
+  const args: string[] = [];
+
+  // Une seule piste, désignée par son index absolu. Rien d'autre ne sort.
+  args.push('-map', `0:${options.streamIndex}`);
+  args.push('-vn', '-sn', '-dn', '-map_chapters', '-1');
+
+  args.push('-c:a', 'aac', '-b:a', AUDIO_BITRATE, '-ac', '2', '-ar', String(AUDIO_SAMPLE_RATE));
+  args.push('-af', downmixFilter(options.channels));
+
+  if (options.startTime > 0) args.push('-output_ts_offset', options.startTime.toFixed(3));
+
+  args.push('-f', 'hls');
+  args.push('-hls_time', String(options.segmentDuration));
+  args.push('-hls_list_size', '0');
+  args.push('-hls_segment_type', 'fmp4');
+  args.push('-hls_fmp4_init_filename', INIT_FILE_NAME);
+  args.push('-hls_segment_filename', `${options.outputDir}/${SEGMENT_PATTERN}`);
+  args.push('-start_number', String(options.startNumber));
+  args.push('-hls_flags', 'independent_segments+temp_file+omit_endlist');
+  args.push('-y', `${options.outputDir}/internal.m3u8`);
+
+  return args;
+}
+
+/**
+ * PLUSIEURS pistes, UNE seule lecture du fichier.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * SIX PISTES NE DOIVENT PAS COÛTER SIX TRAVERSÉES.
+ *
+ * Une exécution par piste relit le conteneur entier à chaque fois : sur Avatar,
+ * 101 Go multipliés par six. Mesuré sur la bibliothèque, la pré-génération
+ * passerait de 4,92 Tio à lire à 10,54 Tio — plus du double, pour exactement le
+ * même résultat.
+ *
+ * ffmpeg accepte autant de sorties qu'on veut sur une entrée, et ne lit le
+ * fichier qu'une fois. Chaque sortie garde ses propres arguments, produits par
+ * la MÊME fonction que la sortie unique.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export function buildMultiAudioArgs(
+  input: string,
+  sorties: Omit<AudioRunOptions, 'input'>[],
+): string[] {
+  const args: string[] = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
+  args.push('-probesize', PROBE_SIZE, '-analyzeduration', ANALYZE_DURATION);
+  args.push('-i', input);
+  for (const sortie of sorties) args.push(...sortieAudio(sortie));
+  return args;
+}
+
 export function buildAudioArgs(options: AudioRunOptions): string[] {
   const args: string[] = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
 

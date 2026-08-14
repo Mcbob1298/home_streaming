@@ -28,7 +28,9 @@ import { stat } from 'node:fs/promises';
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
+import { AUDIO_DIR } from '../config.js';
 import type { Db } from '../db/index.js';
+import { staticInit, staticSegment, usableAudio } from '../transcode/audioStore.js';
 import { findMedia, resolvePlayback, type MediaRow, type ResolvedPlayback } from '../playback/resolve.js';
 import { bitrateFor, outputHeight } from '../transcode/encode.js';
 import { buildMasterPlaylist, estimateBandwidth, needsMaster } from '../transcode/manifest.js';
@@ -394,6 +396,19 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     const stream = readStreamIndex((request.params as { stream: string }).stream);
     if (stream === null) return reply.code(400).send({ error: 'Index de piste audio invalide.' });
 
+    /*
+     * Les pistes PRÉ-GÉNÉRÉES d'abord. Quand elles existent, aucune session
+     * audio n'est créée : plus rien à relancer au déplacement, donc plus de
+     * chemin fragile. Absentes, on retombe sur la production à la demande.
+     */
+    const preGenere = usableAudio(
+      AUDIO_DIR, media.id, media.sizeBytes, media.mtimeMs, resolved.audioPlan, resolved.audioRenditions,
+    );
+    if (preGenere !== null) {
+      const statique = staticInit(preGenere, stream);
+      if (statique !== null) return sendWorkFile(reply, statique, 'video/mp4');
+    }
+
     const session = await acquire(manager, media, resolved);
     const file = await session.ensureAudioInit(stream);
     if (file === null) {
@@ -422,6 +437,14 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       return reply.code(400).send({ error: 'Numéro de segment invalide.' });
     }
     if (index >= resolved.audioPlan.length) return reply.code(404).send({ error: 'Segment hors du fichier.' });
+
+    const preGenere = usableAudio(
+      AUDIO_DIR, media.id, media.sizeBytes, media.mtimeMs, resolved.audioPlan, resolved.audioRenditions,
+    );
+    if (preGenere !== null) {
+      const statique = staticSegment(preGenere, stream, index);
+      if (statique !== null) return sendWorkFile(reply, statique, 'video/iso.segment');
+    }
 
     const session = await acquire(manager, media, resolved);
     const file = await session.ensureAudioSegment(stream, index);

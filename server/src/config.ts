@@ -103,6 +103,14 @@ export const SUBTITLE_CACHE_DIR = path.join(DATA_DIR, 'subtitles');
  */
 export const PRELUDE_DIR = path.join(DATA_DIR, 'preludes');
 
+/**
+ * Racine des pistes audio pré-générées.
+ *
+ * Sur /volume1 comme le reste : ce sont des fichiers complets, produits une
+ * fois, et servis statiquement. Les perdre coûterait un réencodage entier.
+ */
+export const AUDIO_DIR = path.join(DATA_DIR, 'audio');
+
 /** Même résolution que `resolveFromRepoRoot`, utilisable avant sa déclaration. */
 function resolveFromRepoRootEarly(value: string): string {
   return path.isAbsolute(value) ? value : path.resolve(REPO_ROOT, value);
