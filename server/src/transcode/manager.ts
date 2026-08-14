@@ -7,6 +7,7 @@
  */
 import { mkdir, rm } from 'node:fs/promises';
 
+import { usablePrelude } from './prelude.js';
 import { TranscodeSession, type SessionInput, type SessionOptions } from './session.js';
 
 export interface ManagerOptions {
@@ -20,6 +21,12 @@ export interface ManagerOptions {
    * au redémarrage du serveur.
    */
   subtitleCacheDir: string;
+  /**
+   * Racine des préludes. Sur /volume1, JAMAIS dans workDir : celui-ci est
+   * effacé à chaque démarrage et vit en tmpfs, alors qu'un prélude coûte un
+   * encodage complet de ses vingt-quatre secondes.
+   */
+  preludeRoot: string;
   maxSessions: number;
   /** Une session sans requête depuis ce délai est tuée. */
   idleSeconds: number;
@@ -60,6 +67,8 @@ export class SessionManager {
     // Le cache de sous-titres, lui, n'est PAS effacé : il est le fruit d'une
     // traversée complète de chaque fichier.
     await mkdir(this.options.subtitleCacheDir, { recursive: true });
+    // Les préludes non plus ne sont jamais effacés : chacun est un encodage.
+    await mkdir(this.options.preludeRoot, { recursive: true });
 
     this.sweeper = setInterval(() => void this.sweep(), 10_000);
     this.sweeper.unref();
@@ -92,14 +101,31 @@ export class SessionManager {
 
     await this.makeRoom();
 
-    const session = new TranscodeSession(input, {
+    /*
+     * Le prélude est résolu ICI, et pas dans la session : la vérification
+     * d'empreinte a besoin des options matérielles — accélération, tone
+     * mapping — que seul le réservoir connaît. Un prélude qui ne correspond
+     * plus rend null, et la lecture démarre comme avant.
+     */
+    const options: SessionOptions = {
       ffmpegBinary: this.options.ffmpegBinary,
       workDir: this.options.workDir,
       hardware: this.options.hardware,
       device: this.options.device,
       toneMap: this.options.toneMap,
       onLog: this.options.onLog,
-    });
+    };
+
+    const preludeDir = usablePrelude(
+      this.options.preludeRoot,
+      input,
+      options,
+      input.sizeBytes,
+      input.mtimeMs,
+    );
+    if (preludeDir !== null) this.options.onLog('prélude trouvé', { mediaFileId: input.mediaFileId });
+
+    const session = new TranscodeSession({ ...input, preludeDir }, options);
     await session.prepare();
     this.sessions.set(input.mediaFileId, session);
     return session;

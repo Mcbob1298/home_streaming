@@ -94,6 +94,15 @@ export const DATA_DIR = path.join(REPO_ROOT, 'data');
  */
 export const SUBTITLE_CACHE_DIR = path.join(DATA_DIR, 'subtitles');
 
+/**
+ * Racine des préludes — les premières secondes encodées d'avance.
+ *
+ * Dans DATA_DIR, donc sur /volume1 : le répertoire de transcodage monte en
+ * tmpfs et disparaît à chaque démarrage, alors qu'un prélude coûte un encodage
+ * matériel de ses vingt-quatre secondes. Il n'est jamais évincé.
+ */
+export const PRELUDE_DIR = path.join(DATA_DIR, 'preludes');
+
 /** Même résolution que `resolveFromRepoRoot`, utilisable avant sa déclaration. */
 function resolveFromRepoRootEarly(value: string): string {
   return path.isAbsolute(value) ? value : path.resolve(REPO_ROOT, value);

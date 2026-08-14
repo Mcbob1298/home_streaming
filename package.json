@@ -20,7 +20,9 @@
     "migrate-paths": "npm --prefix server run migrate-paths --",
     "build": "npm --prefix server run build && npm --prefix web run build",
     "start": "npm --prefix server run start",
-    "test": "npm --prefix server run test && npm --prefix web run test"
+    "test": "npm --prefix server run test && npm --prefix web run test",
+    "//prelude": "Palier 4 : encode et conserve les premieres secondes d un fichier, pour un demarrage immediat.",
+    "prelude": "npm --prefix server run prelude --"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

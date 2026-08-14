@@ -147,6 +147,8 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     return manager.acquire({
       mediaFileId: media.id,
       inputPath: media.rawPath ?? media.path,
+      sizeBytes: media.sizeBytes,
+      mtimeMs: media.mtimeMs,
       plan: resolved.plan,
       mode: resolved.decision.mode === 'transcode' ? 'transcode' : 'remux',
       source: resolved.source,

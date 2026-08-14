@@ -30,6 +30,7 @@ import { copyFile, mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { buildAudioArgs, buildRemuxArgs, planRuns, type AudioChoice, type RunPlan } from './args.js';
+import { seedFromPrelude } from './prelude.js';
 import type { ToneMapBackend } from './capabilities.js';
 import { buildTranscodeArgs, type HardwareBackend, type HdrKind } from './encode.js';
 import {
@@ -101,6 +102,9 @@ export interface SessionInput {
   mediaFileId: number;
   /** Chemin EXACT du fichier, tel que readdir l'a rendu. */
   inputPath: string;
+  /** Taille et date : l'empreinte qui nomme le prélude, et l'invalide. */
+  sizeBytes: number;
+  mtimeMs: number;
   /** Découpe de la vidéo. */
   plan: PlannedSegment[];
   /**
@@ -121,6 +125,13 @@ export interface SessionInput {
   audioPlan: PlannedSegment[];
   /** Pistes que le manifeste expose comme rendus. Vide quand l'audio est muxé. */
   audioRenditions: AudioRendition[];
+  /**
+   * Prélude déjà encodé pour CE fichier et CES paramètres, ou null.
+   *
+   * Résolu par l'appelant, qui a seul de quoi vérifier l'empreinte. La session
+   * ne décide pas s'il est valable : elle pose ce qu'on lui donne.
+   */
+  preludeDir?: string | null;
 }
 
 export type SessionState = 'idle' | 'running' | 'finished' | 'failed';
@@ -144,6 +155,9 @@ class SegmentProducer {
   /** Instant du lancement, pour mesurer le délai jusqu'au premier segment. */
   startedAt = 0;
 
+  /** Vrai une fois le prélude posé : on ne le pose qu'une fois par sortie. */
+  private seeded = false;
+
   constructor(
     readonly dir: string,
     private readonly plan: PlannedSegment[],
@@ -151,6 +165,8 @@ class SegmentProducer {
     private readonly argsFor: (run: RunPlan) => string[],
     private readonly options: SessionOptions,
     private readonly label: string,
+    /** Répertoire du prélude de CETTE sortie, ou null. */
+    private readonly preludeDir: string | null = null,
   ) {}
 
   get status(): { state: SessionState; producedFrom: number; error: string | null } {
@@ -161,8 +177,36 @@ class SegmentProducer {
     return this.plan.length;
   }
 
+  /**
+   * Crée le répertoire, et y POSE LE PRÉLUDE s'il y en a un.
+   *
+   * Avant toute exécution ffmpeg, donc : `ensureSegment` trouvera les premiers
+   * segments comme s'ils venaient d'être produits, et `startAt` ne sera appelé
+   * qu'au premier segment absent — c'est-à-dire à la jonction, exactement comme
+   * pour un déplacement.
+   */
   async prepare(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
+
+    if (this.preludeDir !== null && !this.seeded) {
+      this.seeded = true;
+      const poses = await seedFromPrelude(this.preludeDir, this.dir);
+      if (poses > 0) this.options.onLog('prélude posé', { sortie: this.label, fichiers: poses });
+    }
+  }
+
+  /**
+   * Arrête ffmpeg SANS effacer le répertoire.
+   *
+   * Sert à la fabrication d'un prélude, dont les fichiers sont précisément ce
+   * qu'on veut garder. `close()` fait l'inverse, et c'est ce qu'il doit faire
+   * pour une session de lecture.
+   */
+  abandon(): void {
+    this.closed = true;
+    this.queue = [];
+    this.stopChild();
+    this.state = 'idle';
   }
 
   /**
@@ -370,6 +414,9 @@ export class TranscodeSession {
       (run) => this.videoArgs(run),
       options,
       'vidéo',
+      input.preludeDir === undefined || input.preludeDir === null
+        ? null
+        : path.join(input.preludeDir, 'v'),
     );
   }
 
@@ -447,6 +494,9 @@ export class TranscodeSession {
         }),
       this.options,
       `audio ${streamIndex}`,
+      this.input.preludeDir === undefined || this.input.preludeDir === null
+        ? null
+        : path.join(this.input.preludeDir, `a-${streamIndex}`),
     );
 
     this.audio.set(streamIndex, producer);
@@ -503,6 +553,13 @@ export class TranscodeSession {
   }
 
   // --- Fin de vie ----------------------------------------------------------
+
+  /** Tue tous les processus SANS rien effacer. Pour fabriquer un prélude. */
+  abandon(): void {
+    this.closed = true;
+    this.video.abandon();
+    for (const producer of this.audio.values()) producer.abandon();
+  }
 
   /** Tue TOUS les processus de la session et efface son répertoire. */
   async close(): Promise<void> {

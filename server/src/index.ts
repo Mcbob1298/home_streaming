@@ -38,6 +38,7 @@ import {
   resolveDatabasePath,
   resolveImagesPath,
   resolveTranscodePath,
+  PRELUDE_DIR,
   SUBTITLE_CACHE_DIR,
 } from './config.js';
 import { openDatabase } from './db/index.js';
@@ -171,6 +172,7 @@ async function main(): Promise<void> {
        * traversée complète du fichier source.
        */
       subtitleCacheDir,
+      preludeRoot: PRELUDE_DIR,
       maxSessions: config.transcode.maxSessions,
       idleSeconds: config.transcode.idleSeconds,
       /*
