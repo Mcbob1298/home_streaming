@@ -1164,3 +1164,22 @@ perdue.
 > aperçoive. **Seule la concaténation de PLUSIEURS segments consécutifs dit
 > quelque chose** : on y lit alors les reculs, les trous, et le nombre d'images
 > rapporté à la durée annoncée.
+
+### Mesurer la lecture : dans le navigateur, jamais par assemblage de fichiers
+
+`scripts/mesure-navigateur/` porte les instruments et la règle. Elle a été
+écrite au prix de **trois diagnostics entièrement faux**, tous dus à la même
+cause : concaténer `init.mp4` + des segments et lire les horodatages avec
+ffprobe mesure **l'en-tête**, pas le segment.
+
+Le même segment donne 0,041 s ou 6,000 s selon l'en-tête qu'on lui accole ; deux
+segments différents donnent la même valeur avec le même en-tête ; et après un
+déplacement, tous annoncent zéro quelle que soit leur position réelle.
+
+hls.js empile des fragments dans des `SourceBuffer` distincts — un audio, un
+vidéo — et c'est le moteur média qui décide où chacun atterrit. On piège donc
+`addSourceBuffer` et `appendBuffer`, et on lit les plages **de chaque tampon**.
+
+> **`AVEC_FENETRE=1` est obligatoire.** En mode sans affichage, Chrome n'exécute
+> pas le pipeline média : `currentTime` n'avance pas, et toute mesure de
+> démarrage ou de synchronisation est muette ou fausse.
