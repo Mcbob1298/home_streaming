@@ -95,9 +95,9 @@ function poser(input: SessionInput, options: SessionOptions = OPTIONS): string {
 describe('planPrelude — la grille RÉELLE, pas la durée visée', () => {
   it('s’arrête sur des bornes de segment', () => {
     const plan = planPrelude(entree());
-    // 3 segments de 2 s puis des segments de 4 s : 0,2,4,6,10,14,18,22 → 8.
-    expect(plan.videoSegments).toBe(8);
-    expect(plan.videoEnd).toBe(26);
+    // Grille uniforme de 4 s : 0,4,8,12,16,20 → 6 segments jusqu'à 24 s.
+    expect(plan.videoSegments).toBe(6);
+    expect(plan.videoEnd).toBe(24);
     // Audio : 8 s exactement, donc 0,8,16 → 3 segments jusqu'à 24 s.
     expect(plan.audioSegments).toBe(3);
     expect(plan.audioEnd).toBe(24);
@@ -209,8 +209,8 @@ describe('seedFromPrelude', () => {
     mkdirSync(sortie, { recursive: true });
 
     return seedFromPrelude(dir, sortie).then((poses) => {
-      // 8 segments + init.mp4. Le prelude.json n'est pas dans « v ».
-      expect(poses).toBe(9);
+      // 6 segments + init.mp4. Le prelude.json n'est pas dans « v ».
+      expect(poses).toBe(7);
     });
   });
 
@@ -222,7 +222,7 @@ describe('seedFromPrelude', () => {
     writeFileSync(path.join(sortie, 'seg-00000.m4s'), 'deja la');
 
     const poses = await seedFromPrelude(dir, sortie);
-    expect(poses).toBe(8);
+    expect(poses).toBe(6);
   });
 
   it('ne casse pas quand le prélude n’existe pas', async () => {

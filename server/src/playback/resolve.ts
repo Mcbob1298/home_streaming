@@ -12,8 +12,6 @@ import { ffprobeFor } from '../transcode/keyframes.js';
 import { needsSeparateAudio } from '../transcode/manifest.js';
 import { segmentPlanOf } from '../transcode/plan.js';
 import {
-  PRIMER_COUNT,
-  PRIMER_DURATION,
   SEGMENT_DURATION,
   planAudioSegments,
   planSegments,
@@ -325,4 +323,4 @@ export function audioLayoutOf(
   };
 }
 
-export { PRIMER_COUNT, PRIMER_DURATION, SEGMENT_DURATION };
+export { SEGMENT_DURATION };

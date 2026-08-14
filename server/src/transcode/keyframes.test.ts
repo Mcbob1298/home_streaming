@@ -69,14 +69,15 @@ describe('planFromKeyframes', () => {
     expect(plan.map((s) => s.start)).toEqual([0, 4, 8]);
   });
 
-  it('vise plus court sur les premiers segments', () => {
-    const plan = planFromKeyframes([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 13, {
-      target: 4,
-      primerCount: 3,
-      primerTarget: 2,
-    });
-    // Trois segments de 2 s, puis 4 s.
-    expect(plan.map((s) => s.start)).toEqual([0, 2, 4, 6, 10]);
+  it('vise la même durée du début à la fin', () => {
+    /*
+     * Il y avait ici une amorce de trois segments de deux secondes. Elle a été
+     * supprimée : elle imposait deux exécutions ffmpeg, donc deux en-têtes fMP4
+     * différents, et le lecteur n'en recevant qu'un le film perdait ses six
+     * premières secondes.
+     */
+    const plan = planFromKeyframes([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 13, { target: 4 });
+    expect(plan.map((s) => s.start)).toEqual([0, 4, 8, 12]);
   });
 
   it('couvre exactement la durée', () => {

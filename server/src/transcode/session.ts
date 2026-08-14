@@ -36,8 +36,6 @@ import { buildTranscodeArgs, type HardwareBackend, type HdrKind } from './encode
 import {
   AUDIO_SEGMENT_DURATION,
   INIT_FILE_NAME,
-  PRIMER_COUNT,
-  PRIMER_DURATION,
   SEGMENT_DURATION,
   segmentFileName,
   type PlannedSegment,
@@ -46,9 +44,25 @@ import {
 /**
  * Copie stable du segment d'initialisation.
  *
- * Chaque exécution ffmpeg réécrit `init.mp4`. Comme la vidéo est copiée, son
- * contenu est identique d'une exécution à l'autre — mais le servir pendant sa
- * réécriture donnerait un fichier tronqué. On en fige donc une copie.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * L'AFFIRMATION QUI ÉTAIT ÉCRITE ICI ÉTAIT FAUSSE, ET C'ÉTAIT LA RACINE D'UN
+ * DÉFAUT DE CORRECTION.
+ *
+ * On lisait : « comme la vidéo est copiée, son contenu est identique d'une
+ * exécution à l'autre ». C'est faux dès qu'une exécution part d'une position non
+ * nulle : elle porte alors `-output_ts_offset`, et ffmpeg inscrit ce décalage
+ * DANS l'en-tête. Vérifié octet par octet sur deux `init.mp4` du même fichier :
+ * deux octets d'écart, 6000 contre 41 — la longueur de l'amorce en
+ * millisecondes. Vrai pour le transcodage comme pour le remux.
+ *
+ * La copie reste nécessaire pour une autre raison, elle bien réelle : ffmpeg
+ * écrit `init.mp4` directement, sans fichier temporaire, et le servir pendant sa
+ * réécriture donnerait un fichier tronqué.
+ *
+ * Ce qui change : la copie est refaite à CHAQUE exécution. L'en-tête servi est
+ * donc toujours celui du run qui produit les segments servis, jamais celui d'un
+ * run précédent.
+ * ═════════════════════════════════════════════════════════════════════════════
  */
 const INIT_SNAPSHOT = 'init-stable.mp4';
 
@@ -283,6 +297,13 @@ class SegmentProducer {
       return;
     }
 
+    /*
+     * L'instantané de l'en-tête est INVALIDÉ : cette exécution va écrire le
+     * sien, et c'est lui qu'il faudra servir. Le garder ferait servir l'en-tête
+     * d'un run précédent — le défaut qu'on vient de corriger.
+     */
+    await rm(path.join(this.dir, INIT_SNAPSHOT), { force: true }).catch(() => undefined);
+
     this.currentStart = index;
     this.startedAt = Date.now();
     this.state = 'running';
@@ -410,7 +431,7 @@ export class TranscodeSession {
     this.video = new SegmentProducer(
       path.join(this.dir, 'v'),
       input.plan,
-      (startIndex) => planRuns(startIndex, input.plan, PRIMER_COUNT, SEGMENT_DURATION, PRIMER_DURATION),
+      (startIndex) => planRuns(startIndex, input.plan, SEGMENT_DURATION),
       (run) => this.videoArgs(run),
       options,
       'vidéo',
@@ -480,7 +501,7 @@ export class TranscodeSession {
       plan,
       // Pas d'amorce courte : un segment audio de huit secondes se produit en
       // quelques dizaines de millisecondes, le démarrage est tenu par la vidéo.
-      (startIndex) => planRuns(startIndex, plan, 0, AUDIO_SEGMENT_DURATION, AUDIO_SEGMENT_DURATION),
+      (startIndex) => planRuns(startIndex, plan, AUDIO_SEGMENT_DURATION),
       (run) =>
         buildAudioArgs({
           input: this.input.inputPath,

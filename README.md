@@ -1111,3 +1111,56 @@ elle ne repart jamais du début.
 > rien : sur One Piece, les huit premières secondes des pistes française et
 > japonaise sont identiques dans la source — même intro. Le comparateur en a
 > conclu un défaut serveur qui n'existait pas. Comparer au-delà du générique.
+
+### Le film perdait ses six premières secondes
+
+Trois segments de deux secondes ouvraient la lecture, puis on passait à quatre.
+Une exécution ffmpeg ne sachant pas changer de durée de segment en cours de
+route, il en fallait **deux** — et c'est là que tout se jouait.
+
+La seconde exécution part d'une position non nulle, donc porte
+`-output_ts_offset`, et ffmpeg inscrit ce décalage **dans l'en-tête fMP4**.
+Vérifié octet par octet sur deux `init.mp4` du même fichier :
+
+```
+cmp -l init.mp4 init-stable.mp4
+  271  27   0
+  272 160  51        →  6000  contre  41
+```
+
+6 000 ms, c'est exactement la longueur de l'amorce. Or le lecteur ne reçoit
+qu'**un** en-tête, figé depuis la première exécution : les segments de la
+seconde étaient lus avec le mauvais. Le commentaire qui justifiait ce figeage
+affirmait « comme la vidéo est copiée, son contenu est identique d'une exécution
+à l'autre » — faux dès qu'une exécution porte un décalage, et vrai autant pour le
+remux que pour le transcodage.
+
+**Correction : une seule exécution par départ.** Un run, un en-tête, aucune
+divergence possible. Le démarrage rapide est désormais tenu par le prélude, qui
+sert de vrais fichiers déjà encodés — ce qui rendait l'amorce courte inutile.
+
+Vérifié après correction, en comparant l'image réellement décodée à celle du
+fichier source (distance sur une signature 8×8) :
+
+| Fichier | à t=0 | à t=6 s |
+|---|---|---|
+| Avatar (transcode 4K HDR) | **0 / 64** | 64 / 64 |
+| Big Bang Theory (transcode) | **0 / 64** | 35 / 64 |
+| 57 Seconds (transcode) | **0 / 64** | 37 / 64 |
+| 3 jours max (remux) | **0 / 64** | 1 / 64 |
+
+Effet de bord mesuré : le trou de 16 à 22 secondes d'Avatar a disparu du même
+coup — 0 plage tamponnée multiple contre 311 avant, aucun saut, aucune image
+perdue.
+
+> **PIÈGE DE VÉRIFICATION — une sonde qui mesure l'en-tête au lieu du segment.**
+>
+> Concaténer `init.mp4` + **un** segment et lire ses horodatages ne dit RIEN du
+> segment : la liste d'édition de l'en-tête impose la valeur lue. Le même
+> segment donnait 0,041 s avec un en-tête et 6,000 s avec l'autre ; et deux
+> segments différents donnaient la même valeur avec le même en-tête.
+>
+> Cette sonde a produit deux diagnostics entièrement faux avant qu'on ne s'en
+> aperçoive. **Seule la concaténation de PLUSIEURS segments consécutifs dit
+> quelque chose** : on y lit alors les reculs, les trous, et le nombre d'images
+> rapporté à la durée annoncée.

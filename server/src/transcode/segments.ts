@@ -15,15 +15,30 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-/** Segments courts en tête, pour que la lecture démarre vite. */
-export const PRIMER_COUNT = 3;
-export const PRIMER_DURATION = 2;
-
-/** Durée de croisière. Quatre secondes : le compromis habituel. */
+/**
+ * Durée d'un segment vidéo. Quatre secondes : le compromis habituel.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * IL N'Y A PLUS D'AMORCE COURTE, ET C'ÉTAIT UN DÉFAUT DE CORRECTION.
+ *
+ * Trois segments de deux secondes ouvraient la lecture, puis on passait à
+ * quatre. Une seule exécution ffmpeg ne sachant pas changer de durée en cours de
+ * route, il en fallait DEUX — et c'est là que tout se jouait : la seconde
+ * portait `-output_ts_offset`, donc écrivait un en-tête fMP4 différent de la
+ * première. Mesuré sur les deux fichiers `init.mp4` : deux octets d'écart, 6000
+ * contre 41, soit exactement la longueur de l'amorce en millisecondes.
+ *
+ * Or le lecteur ne reçoit qu'UN en-tête, figé depuis la première exécution. Les
+ * segments de la seconde étaient donc interprétés avec le mauvais. Assemblés
+ * comme le lecteur les assemble, les six premiers segments donnaient 432 images
+ * — dix-huit secondes de contenu — sur une ligne de temps de douze secondes.
+ *
+ * Une exécution unique supprime la cause plutôt que de la rattraper : un run,
+ * un en-tête, aucune divergence possible. Le démarrage rapide, lui, est
+ * désormais tenu par le prélude, qui sert de vrais fichiers déjà encodés.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
 export const SEGMENT_DURATION = 4;
-
-/** Fin de l'amorce courte, en secondes. */
-export const PRIMER_END = PRIMER_COUNT * PRIMER_DURATION;
 
 export interface PlannedSegment {
   index: number;
@@ -32,10 +47,9 @@ export interface PlannedSegment {
 }
 
 /**
- * Découpe une durée en segments : trois de deux secondes, puis quatre.
+ * Découpe une durée en segments de durée UNIFORME.
  *
- * Le dernier segment est tronqué à la durée réelle. Un fichier plus court que
- * l'amorce n'en produit que ce qu'il faut.
+ * Le dernier segment est tronqué à la durée réelle.
  */
 export function planSegments(durationSeconds: number): PlannedSegment[] {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return [];
@@ -44,10 +58,9 @@ export function planSegments(durationSeconds: number): PlannedSegment[] {
   let start = 0;
 
   while (start < durationSeconds - 0.001) {
-    const target = segments.length < PRIMER_COUNT ? PRIMER_DURATION : SEGMENT_DURATION;
-    const duration = Math.min(target, durationSeconds - start);
+    const duration = Math.min(SEGMENT_DURATION, durationSeconds - start);
     segments.push({ index: segments.length, start: round(start), duration: round(duration) });
-    start += target;
+    start += SEGMENT_DURATION;
   }
 
   return segments;
@@ -198,29 +211,25 @@ export function buildPlaylist(plan: PlannedSegment[], urls: PlaylistUrls): strin
  * Toute modification ici doit être vérifiée contre la sortie réelle de ffmpeg.
  * ─────────────────────────────────────────────────────────────────────────────
  *
- * `primerCount` premiers segments visent `primerTarget`, les suivants `target`.
- * Ce sont des MINIMUMS : sur un fichier dont les images clés sont espacées de
- * dix secondes, un segment « de deux secondes » en fera dix. C'est la source
+ * `target` est un MINIMUM : sur un fichier dont les images clés sont espacées de
+ * dix secondes, un segment « de quatre secondes » en fera dix. C'est la source
  * qui décide, et le manifeste doit dire la vérité.
  */
 export function planFromKeyframes(
   keyframes: number[],
   durationSeconds: number,
-  options: { target?: number; primerCount?: number; primerTarget?: number } = {},
+  options: { target?: number } = {},
 ): PlannedSegment[] {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return [];
   if (keyframes.length === 0) return [];
 
   const target = options.target ?? SEGMENT_DURATION;
-  const primerCount = options.primerCount ?? 0;
-  const primerTarget = options.primerTarget ?? PRIMER_DURATION;
 
   const starts: number[] = [keyframes[0] as number];
 
   for (const time of keyframes) {
     const currentStart = starts.at(-1) as number;
-    const minimum = starts.length <= primerCount ? primerTarget : target;
-    if (time - currentStart >= minimum) starts.push(time);
+    if (time - currentStart >= target) starts.push(time);
   }
 
   return starts.map((start, index) => {

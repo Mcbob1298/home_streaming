@@ -282,24 +282,28 @@ export function buildAudioArgs(options: AudioRunOptions): string[] {
 }
 
 /**
- * Découpe une exécution en deux quand elle part du début.
+ * UNE exécution ffmpeg par départ. Jamais deux.
  *
- * Les premiers segments visent deux secondes pour que la lecture démarre vite ;
- * la suite passe à quatre. Une seule exécution ffmpeg ne sait pas changer de
- * durée de segment en cours de route, d'où l'enchaînement.
+ * ═════════════════════════════════════════════════════════════════════════════
+ * CETTE FONCTION RENDAIT DEUX EXÉCUTIONS, ET C'ÉTAIT LA RACINE D'UN DÉFAUT.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * LE PIÈGE : le numéro de départ de la seconde exécution.
+ * Elle enchaînait une amorce de trois segments courts puis la croisière, parce
+ * qu'une exécution ffmpeg ne sait pas changer de durée de segment en cours de
+ * route. Mais la seconde exécution part d'une position non nulle, donc porte
+ * `-output_ts_offset`, donc écrit un en-tête fMP4 DIFFÉRENT de la première.
  *
- * Il ne peut PAS être deviné. Sur un fichier dont les images clés sont espacées
- * de dix secondes, une amorce « de trois segments de deux secondes » n'en
- * produit qu'un seul — et les numéros 1 et 2, jamais produits, resteraient des
- * trous que le lecteur attendrait indéfiniment. Bogue observé, trente secondes
- * d'attente puis une erreur.
+ * Le lecteur, lui, ne reçoit qu'un en-tête. Les segments de la seconde
+ * exécution étaient donc lus avec celui de la première, et le film perdait ses
+ * six premières secondes.
  *
- * Les bornes viennent donc du PLAN, qui est calqué sur les images clés réelles :
- * la seconde exécution reprend exactement là où la première s'arrête.
- * ─────────────────────────────────────────────────────────────────────────────
+ * Une exécution unique rend la divergence impossible. Le démarrage rapide est
+ * assuré autrement — par le prélude, qui sert des fichiers déjà encodés.
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * La fonction est conservée plutôt que supprimée : elle rend un TABLEAU, et
+ * c'est ce tableau que la session enchaîne. Le jour où une raison légitime
+ * demandera plusieurs exécutions, elle devra d'abord régler la question de
+ * l'en-tête.
  */
 export interface RunPlan {
   startTime: number;
@@ -311,32 +315,10 @@ export interface RunPlan {
 export function planRuns(
   startIndex: number,
   plan: { index: number; start: number; duration: number }[],
-  primerCount: number,
   segmentDuration: number,
-  primerDuration: number,
 ): RunPlan[] {
   const first = plan[startIndex];
   if (first === undefined) return [];
 
-  // Départ hors de l'amorce : une seule exécution, en segments de croisière.
-  if (startIndex >= primerCount) {
-    return [{ startTime: first.start, startNumber: startIndex, segmentDuration, endTime: null }];
-  }
-
-  const boundary = plan[primerCount];
-
-  // Fichier plus court que l'amorce : une seule exécution, jusqu'au bout.
-  if (boundary === undefined) {
-    return [{ startTime: first.start, startNumber: startIndex, segmentDuration: primerDuration, endTime: null }];
-  }
-
-  return [
-    {
-      startTime: first.start,
-      startNumber: startIndex,
-      segmentDuration: primerDuration,
-      endTime: boundary.start,
-    },
-    { startTime: boundary.start, startNumber: primerCount, segmentDuration, endTime: null },
-  ];
+  return [{ startTime: first.start, startNumber: startIndex, segmentDuration, endTime: null }];
 }

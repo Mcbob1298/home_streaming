@@ -9,8 +9,6 @@ import type { Db } from '../db/index.js';
 import { nowIso } from '../db/index.js';
 import { ffprobeFor, readKeyframes } from './keyframes.js';
 import {
-  PRIMER_COUNT,
-  PRIMER_DURATION,
   SEGMENT_DURATION,
   planFromKeyframes,
   type PlannedSegment,
@@ -90,7 +88,5 @@ export async function segmentPlanOf(
 function buildPlan(times: number[], durationSeconds: number): PlannedSegment[] {
   return planFromKeyframes(times, durationSeconds, {
     target: SEGMENT_DURATION,
-    primerCount: PRIMER_COUNT,
-    primerTarget: PRIMER_DURATION,
   });
 }

@@ -2,9 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import { buildRemuxArgs, planRuns } from './args.js';
 import {
-  PRIMER_COUNT,
-  PRIMER_DURATION,
-  PRIMER_END,
   SEGMENT_DURATION,
   buildPlaylist,
   planFromKeyframes,
@@ -14,16 +11,15 @@ import {
 } from './segments.js';
 
 describe('planSegments', () => {
-  it('commence par trois segments de deux secondes', () => {
+  it('découpe en segments de durée UNIFORME', () => {
+    /*
+     * Plus d'amorce courte : elle imposait deux exécutions ffmpeg, donc deux
+     * en-têtes fMP4, et le film y perdait ses six premières secondes.
+     */
     const plan = planSegments(60);
-    expect(plan.slice(0, PRIMER_COUNT).map((s) => s.duration)).toEqual([2, 2, 2]);
-    expect(plan.slice(0, PRIMER_COUNT).map((s) => s.start)).toEqual([0, 2, 4]);
-  });
-
-  it('passe ensuite à quatre secondes', () => {
-    const plan = planSegments(60);
-    expect(plan[3]).toEqual({ index: 3, start: PRIMER_END, duration: SEGMENT_DURATION });
-    expect(plan[4]).toEqual({ index: 4, start: 10, duration: 4 });
+    expect(plan.slice(0, 4).map((s) => s.duration)).toEqual([4, 4, 4, 4]);
+    expect(plan.slice(0, 4).map((s) => s.start)).toEqual([0, 4, 8, 12]);
+    expect(plan[3]).toEqual({ index: 3, start: 12, duration: SEGMENT_DURATION });
   });
 
   it('couvre exactement la durée du fichier', () => {
@@ -37,13 +33,12 @@ describe('planSegments', () => {
   });
 
   it('tronque le dernier segment', () => {
-    // 11 s : trois segments de 2, puis un de 4, puis un de 1.
-    const plan = planSegments(11);
-    expect(plan.map((s) => s.duration)).toEqual([2, 2, 2, 4, 1]);
+    // 11 s : deux segments de 4, puis un de 3.
+    expect(planSegments(11).map((s) => s.duration)).toEqual([4, 4, 3]);
   });
 
-  it('gère un fichier plus court que l’amorce', () => {
-    expect(planSegments(3).map((s) => s.duration)).toEqual([2, 1]);
+  it('gère un fichier plus court qu’un segment', () => {
+    expect(planSegments(3).map((s) => s.duration)).toEqual([3]);
     expect(planSegments(1.5).map((s) => s.duration)).toEqual([1.5]);
   });
 
@@ -65,15 +60,15 @@ describe('segmentIndexAt', () => {
 
   it('trouve le segment contenant une position', () => {
     expect(segmentIndexAt(plan, 0)).toBe(0);
-    expect(segmentIndexAt(plan, 1.9)).toBe(0);
-    expect(segmentIndexAt(plan, 2)).toBe(1);
-    expect(segmentIndexAt(plan, 6)).toBe(3);
-    expect(segmentIndexAt(plan, 9.999)).toBe(3);
-    expect(segmentIndexAt(plan, 10)).toBe(4);
+    expect(segmentIndexAt(plan, 3.9)).toBe(0);
+    expect(segmentIndexAt(plan, 4)).toBe(1);
+    expect(segmentIndexAt(plan, 12)).toBe(3);
+    expect(segmentIndexAt(plan, 15.999)).toBe(3);
+    expect(segmentIndexAt(plan, 16)).toBe(4);
   });
 
   it('trouve le bon segment loin dans le film', () => {
-    // 40 minutes = 2400 s → (2400 − 6) / 4 + 3 = 601,5 → segment 601.
+    // 40 minutes = 2400 s → 2400 / 4 = 600.
     const index = segmentIndexAt(plan, 2400);
     const segment = plan[index] as { start: number; duration: number };
     expect(segment.start).toBeLessThanOrEqual(2400);
@@ -114,7 +109,7 @@ describe('buildPlaylist', () => {
   it('liste tous les segments avec leur durée', () => {
     const extinf = playlist.split('\n').filter((line) => line.startsWith('#EXTINF'));
     expect(extinf).toHaveLength(plan.length);
-    expect(extinf[0]).toBe('#EXTINF:2.000000,');
+    expect(extinf[0]).toBe('#EXTINF:4.000000,');
     expect(extinf[3]).toBe('#EXTINF:4.000000,');
     expect(playlist).toContain('seg-00000.m4s');
     expect(playlist).toContain(segmentFileName(plan.length - 1));
@@ -135,18 +130,20 @@ describe('segmentFileName', () => {
 
 describe('planRuns', () => {
   const plan = planSegments(2455.21);
-  const runs = (index: number, from = plan) =>
-    planRuns(index, from, PRIMER_COUNT, SEGMENT_DURATION, PRIMER_DURATION);
+  const runs = (index: number, from = plan) => planRuns(index, from, SEGMENT_DURATION);
 
-  it('enchaîne deux exécutions au départ du fichier', () => {
-    // Une seule exécution ffmpeg ne change pas de durée de segment en route.
+  it('rend UNE exécution au départ du fichier', () => {
+    /*
+     * LE POINT QUI COMPTE. Deux exécutions signifiaient deux en-têtes fMP4 —
+     * la seconde portant `-output_ts_offset` — et le lecteur n'en recevant
+     * qu'un, le film perdait ses six premières secondes.
+     */
     const chain = runs(0);
-    expect(chain).toHaveLength(2);
-    expect(chain[0]).toEqual({ startTime: 0, startNumber: 0, segmentDuration: 2, endTime: PRIMER_END });
-    expect(chain[1]).toEqual({ startTime: PRIMER_END, startNumber: 3, segmentDuration: 4, endTime: null });
+    expect(chain).toHaveLength(1);
+    expect(chain[0]).toEqual({ startTime: 0, startNumber: 0, segmentDuration: 4, endTime: null });
   });
 
-  it('n’en fait qu’une au-delà de l’amorce', () => {
+  it('rend UNE exécution aussi au milieu du fichier', () => {
     const chain = runs(600);
     expect(chain).toHaveLength(1);
     expect(chain[0]?.segmentDuration).toBe(4);
@@ -154,28 +151,29 @@ describe('planRuns', () => {
     expect(chain[0]?.startTime).toBe((plan[600] as { start: number }).start);
   });
 
-  /**
-   * Le bogue qui a coûté trente secondes d'attente par segment : la borne de
-   * la seconde exécution était une constante, pas une valeur lue dans le plan.
-   * Sur un fichier dont les images clés sont espacées de dix secondes, l'amorce
-   * ne produit qu'UN segment, et les numéros 1 et 2 n'arrivaient jamais.
-   */
-  it('reprend la seconde exécution là où le plan coupe vraiment', () => {
-    // Plan issu d'images clés espacées de 10 s : l'amorce ne fait qu'un segment
-    // de 10 s, et la croisière doit donc démarrer au segment 3 à t = 30 s.
-    const irregulier = planFromKeyframes([0, 10, 20, 30, 40, 50], 60, {
-      target: SEGMENT_DURATION,
-      primerCount: PRIMER_COUNT,
-      primerTarget: PRIMER_DURATION,
-    });
+  it('ne borne jamais une exécution dans le temps', () => {
+    /*
+     * `endTime` non nul posait un `-t` : c'est ce qui faisait s'arrêter la
+     * première exécution pour en laisser démarrer une seconde. Plus aucune
+     * exécution ne s'arrête d'elle-même — elle produit jusqu'à ce qu'on la tue
+     * ou qu'elle atteigne la fin du fichier.
+     */
+    for (const index of [0, 1, 300, 600]) {
+      expect(runs(index)[0]?.endTime).toBeNull();
+    }
+  });
+
+  it('suit un plan irrégulier issu des images clés', () => {
+    // Images clés espacées de 10 s : les segments en font dix, pas quatre.
+    const irregulier = planFromKeyframes([0, 10, 20, 30, 40, 50], 60, { target: SEGMENT_DURATION });
     expect(irregulier.map((s) => s.start)).toEqual([0, 10, 20, 30, 40, 50]);
 
     const chain = runs(0, irregulier);
-    expect(chain[0]?.endTime).toBe(30);
-    expect(chain[1]).toEqual({ startTime: 30, startNumber: 3, segmentDuration: 4, endTime: null });
+    expect(chain).toHaveLength(1);
+    expect(chain[0]).toEqual({ startTime: 0, startNumber: 0, segmentDuration: 4, endTime: null });
   });
 
-  it('ne prévoit pas de suite sur un fichier plus court que l’amorce', () => {
+  it('rend une exécution sur un fichier plus court qu’un segment', () => {
     const court = planSegments(4);
     expect(runs(0, court)).toHaveLength(1);
     expect(runs(0, court)[0]?.endTime).toBeNull();
@@ -191,8 +189,10 @@ describe('buildRemuxArgs', () => {
     input: 'D:\\Films\\a.mkv',
     startTime: 0,
     startNumber: 0,
-    segmentDuration: 2,
-    endTime: PRIMER_END,
+    segmentDuration: SEGMENT_DURATION,
+    // Plus aucune exécution n'est bornée : elle produit jusqu'à la fin ou
+    // jusqu'à ce qu'on la tue.
+    endTime: null,
     outputDir: 'D:\\work\\sess',
     audio: { kind: 'auto', channels: 6 } as const,
   };
