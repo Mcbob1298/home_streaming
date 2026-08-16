@@ -19,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prelude": "tsx src/transcode/preludeCli.ts",
-    "preludes": "tsx src/transcode/preludesCli.ts",
+    "//preludes": "La COMMANDE COMPILEE, pas tsx : l image de production n a ni tsx ni src/. Une commande documentee qui ne fonctionne pas est pire que pas de commande.",
+    "preludes": "node dist/transcode/preludesCli.js",
     "audio": "tsx src/transcode/audioCli.ts"
   },
   "dependencies": {

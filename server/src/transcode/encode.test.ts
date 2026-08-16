@@ -103,12 +103,30 @@ describe('outputGeometry', () => {
   });
 
   /*
-   * Sans plafond explicite, on décrit le chemin ORDINAIRE. Ce défaut évite
-   * qu'un appelant distrait produise de la 4K sans l'avoir demandé.
+   * ═══════════════════════════════════════════════════════════════════════════
+   * SANS PLAFOND EXPLICITE, ON ÉCHOUE. C'EST UN REVIREMENT.
+   *
+   * Ce test affirmait l'inverse : en l'absence de `hdrMaxHeight`, la géométrie
+   * retombait sur 1080p. Le repli n'était jamais atteint en production, mais sa
+   * conséquence s'il l'avait été aurait été la pire possible — du 4K HDR servi
+   * en 1080p sans erreur, sans journal, indistinguable d'un choix délibéré.
+   *
+   * Une exception se voit à la première requête. Un plafond silencieux se
+   * découvre en mesurant la mauvaise chose pendant une soirée.
+   * ═══════════════════════════════════════════════════════════════════════════
    */
-  it('retombe sur le plafond ordinaire quand aucun n’est donné', () => {
-    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true });
-    expect(g).toMatchObject({ width: 1920, height: 1080 });
+  it('ÉCHOUE bruyamment quand le plafond du transport HDR manque', () => {
+    expect(() =>
+      outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true }),
+    ).toThrow(/plafond explicite/);
+  });
+
+  it('n’exige ce plafond QUE sur le chemin du transport HDR', () => {
+    // Le chemin ordinaire a le sien, en dur et assumé : il ne doit pas échouer.
+    expect(() => outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi })).not.toThrow();
+    expect(() =>
+      outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, mode: 'remux' }),
+    ).not.toThrow();
   });
 
   it('ne laisse PAS le plafond HDR déborder sur le chemin ordinaire', () => {

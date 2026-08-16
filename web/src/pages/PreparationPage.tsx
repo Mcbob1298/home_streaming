@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
+import { Versions } from '../components/Versions';
 import { resumeRecherche, usePreparationStatus, type EnqueueResult, type PreparationStatus } from '../preparation';
 
 /**
@@ -234,6 +235,15 @@ function Titre() {
         Les sous-titres sont extraits une fois pour toutes, avant qu’une œuvre ne soit proposée. Cette page
         montre ce que l’interface normale cache.
       </p>
+      {/*
+        * Le bandeau de versions vit ICI : c’est la page qu’on ouvre quand on
+        * soupçonne le serveur, et la première question à se poser alors est
+        * « quel code tourne ». Un désaccord entre les deux commits rend fausses
+        * toutes les autres observations de la page.
+        */}
+      <div className="mt-4 rounded bg-surface px-5 py-4 text-[13px] leading-[1.6] text-faible">
+        <Versions />
+      </div>
     </div>
   );
 }

@@ -336,7 +336,33 @@ export function outputGeometry(options: {
    * 12 Mbps validés en 4K, sans qu'une deuxième valeur ait à être tenue à jour.
    * ───────────────────────────────────────────────────────────────────────────
    */
-  const plafond = passthrough ? (options.hdrMaxHeight ?? TARGET_HEIGHT) : TARGET_HEIGHT;
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * PAS DE REPLI. UN PLAFOND MANQUANT EST UN DÉFAUT, PAS UN CAS PARTICULIER.
+   *
+   * On lisait ici `options.hdrMaxHeight ?? TARGET_HEIGHT`. Le repli n'était
+   * jamais atteint — les types rendent le champ obligatoire dans
+   * `SessionOptions` et `ManagerOptions`, et les quatre appelants le passent —
+   * mais il n'était protégé que par la discipline.
+   *
+   * S'il l'avait été un jour, la conséquence aurait été le pire cas possible :
+   * du 4K HDR servi en 1080p, SANS erreur, sans journal, sans qu'aucune mesure
+   * ne le distingue d'un choix. La limitation de résolution qu'on a
+   * explicitement refusée, réintroduite par une valeur par défaut.
+   *
+   * Un défaut qui s'annonce coûte une exception ; un défaut silencieux coûte
+   * une soirée à mesurer la mauvaise chose.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  if (passthrough && options.hdrMaxHeight === undefined) {
+    throw new Error(
+      'outputGeometry : le transport HDR exige un plafond explicite. ' +
+        'Renseigner `hdrMaxHeight` depuis config.transcode.hdrMaxHeight — ' +
+        'sans lui, la sortie serait plafonnée à 1080p sans que rien ne le signale.',
+    );
+  }
+
+  const plafond = passthrough ? options.hdrMaxHeight : TARGET_HEIGHT;
   const height = outputHeight(options.sourceHeight, plafond);
   const size = outputSize(options.sourceWidth, options.sourceHeight, height);
 

@@ -59,6 +59,21 @@ WORKDIR /app
 COPY web/package.json web/package-lock.json* ./web/
 RUN npm --prefix web ci
 
+# ------------------------------------------------------------------------------
+# LE BUNDLE PORTE LE COMMIT DE SA CONSTRUCTION.
+#
+# Le serveur et le front sont construits dans la MÊME image mais par deux étages
+# distincts. Rien ne garantissait qu'ils viennent du même code : c'est exactement
+# ce qui vient de se produire — un serveur à jour servant un bundle antérieur à
+# la sonde, sans que rien ne le signale.
+#
+# Vite n'expose au navigateur que les variables préfixées VITE_ ; le nom change
+# donc ici. L'interface affiche cette valeur À CÔTÉ de celle de /api/version, et
+# c'est leur ÉGALITÉ qui prouve que les deux moitiés viennent du même commit.
+# ------------------------------------------------------------------------------
+ARG GIT_COMMIT=inconnu
+ENV VITE_GIT_COMMIT=$GIT_COMMIT
+
 COPY web/tsconfig*.json web/vite.config.ts web/index.html ./web/
 COPY web/src ./web/src
 COPY web/public ./web/public
@@ -141,9 +156,21 @@ FROM ffmpeg-base AS runtime
 
 COPY --from=build /app/server/node_modules ./server/node_modules
 COPY --from=build /app/server/dist ./server/dist
-COPY --from=build /app/server/package.json ./server/package.json
 COPY --from=web /app/web/dist ./web/dist
-COPY package.json ./package.json
+
+# ------------------------------------------------------------------------------
+# LES MANIFESTES SONT LISIBLES PAR TOUS. LE CONTENEUR NE TOURNE PAS EN ROOT.
+#
+# Ils arrivaient avec le mode du contexte de construction — `rwxrwx--- root:root`
+# depuis ce NAS — alors que le conteneur tourne en 1000:10. `npm run <quoi que ce
+# soit>` répondait donc « Permission denied » : npm lit package.json avant tout.
+#
+# Le serveur, lui, n'en souffrait pas — `node server/dist/index.js` ne lit aucun
+# manifeste. Le défaut n'apparaissait qu'à la première commande d'exploitation,
+# c'est-à-dire au pire moment.
+# ------------------------------------------------------------------------------
+COPY --from=build --chmod=0755 /app/server/package.json ./server/package.json
+COPY --chmod=0755 package.json ./package.json
 
 # ------------------------------------------------------------------------------
 # QUEL CODE CETTE IMAGE CONTIENT — inscrit dedans, pas déduit à l'exécution.
