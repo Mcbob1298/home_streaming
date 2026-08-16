@@ -26,11 +26,12 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
-import { copyFile, mkdir, readdir, rm } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { buildAudioArgs, buildRemuxArgs, planRuns, type AudioChoice, type RunPlan } from './args.js';
 import { aElaguer, RECUL_SECONDES } from './debit.js';
+import { enteteComplet } from './enteteComplet.js';
 import { seedFromPrelude } from './prelude.js';
 import type { ToneMapBackend } from './capabilities.js';
 import { buildTranscodeArgs, type HardwareBackend, type HdrKind } from './encode.js';
@@ -331,24 +332,73 @@ class SegmentProducer {
    * On attend donc le premier SEGMENT : quand il est là, l'en-tête qui le
    * précède est forcément écrit en entier.
    */
+  /**
+   * L'instantané de l'en-tête, publié seulement quand il est ENTIER.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * DEUX CORRECTIONS, ET LA PREMIÈRE EST LA CAUSE.
+   *
+   * ON ATTENDAIT LE PREMIER SEGMENT. Signal indirect : il valait tant que ffmpeg
+   * produisait l'en-tête avant les segments. Le prélude a rompu ce lien — ses
+   * segments sont posés AVANT que ffmpeg ne démarre, donc l'attente retournait
+   * immédiatement et la copie partait pendant que ffmpeg écrivait encore
+   * `init.mp4`, qu'il écrit directement. Mesuré : `init-stable.mp4` à zéro
+   * octet, servi en HTTP 200. On vérifie désormais CE DONT L'INSTANTANÉ DÉPEND,
+   * `ftyp` et `moov` entiers d'après la longueur déclarée des boîtes.
+   *
+   * ON SUPPRIMAIT AVANT DE RÉÉCRIRE. Entre les deux, le fichier était absent ou
+   * partiel, et observable dans cet état. La publication se fait maintenant par
+   * écriture dans un temporaire du MÊME répertoire — donc du même système de
+   * fichiers, sans quoi `rename` ne serait pas atomique — puis `rename`, qui
+   * remplace en une opération indivisible.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
   async ensureInit(): Promise<string | null> {
     const snapshot = path.join(this.dir, INIT_SNAPSHOT);
+
+    // Un instantané déjà publié est entier par construction : il n'a jamais
+    // existé sous une forme partielle.
     if (existsSync(snapshot)) return snapshot;
 
     if (this.state === 'idle') await this.startAt(0);
 
-    const firstSegment = await this.waitFor(path.join(this.dir, segmentFileName(this.currentStart)));
-    if (firstSegment === null) return null;
-
     const source = path.join(this.dir, INIT_FILE_NAME);
-    if (!existsSync(source)) return null;
+    const deadline = Date.now() + SEGMENT_TIMEOUT_MS;
 
+    while (Date.now() < deadline) {
+      if (this.state === 'failed') return null;
+
+      try {
+        const donnees = await readFile(source);
+        if (enteteComplet(donnees)) return await this.publierEntete(snapshot, donnees);
+      } catch {
+        // Pas encore écrit : on attend, c'est le cas normal au démarrage.
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    }
+
+    return null;
+  }
+
+  /**
+   * Écrit l'instantané dans un temporaire, puis le renomme.
+   *
+   * Le temporaire porte le PID pour que deux sessions du même fichier — une par
+   * capacité client — ne se marchent pas dessus si elles publiaient au même
+   * instant dans un répertoire partagé. Elles n'en partagent pas aujourd'hui,
+   * mais un nom unique ne coûte rien et ferme la question.
+   */
+  private async publierEntete(snapshot: string, donnees: Buffer): Promise<string> {
+    const temporaire = `${snapshot}.${process.pid}.tmp`;
     try {
-      await copyFile(source, snapshot);
+      await writeFile(temporaire, donnees);
+      await rename(temporaire, snapshot);
       return snapshot;
     } catch {
-      // La copie a échoué : servir l'original vaut mieux que rien.
-      return source;
+      await rm(temporaire, { force: true }).catch(() => undefined);
+      // La publication a échoué, mais les octets sont bons : on sert la source.
+      return path.join(this.dir, INIT_FILE_NAME);
     }
   }
 
@@ -375,11 +425,22 @@ class SegmentProducer {
     }
 
     /*
-     * L'instantané de l'en-tête est INVALIDÉ : cette exécution va écrire le
-     * sien, et c'est lui qu'il faudra servir. Le garder ferait servir l'en-tête
-     * d'un run précédent — le défaut qu'on vient de corriger.
+     * ═════════════════════════════════════════════════════════════════════════
+     * L'INSTANTANÉ N'EST PLUS SUPPRIMÉ ICI, ET C'EST LA MOITIÉ DE LA CORRECTION.
+     *
+     * On l'effaçait au motif que cette exécution allait écrire le sien. Entre la
+     * suppression et la republication, le fichier était absent ou partiel — et
+     * observable dans cet état par une requête. C'est ce qui a servi un en-tête
+     * de zéro octet en HTTP 200.
+     *
+     * Le motif ne tient plus : `-output_ts_offset` supprimé, TOUS les runs
+     * écrivent un en-tête identique au bit près, vérifié aux positions 0, 600,
+     * 2400, 5000 et 9000 s, et à deux durées de segment. Un instantané publié
+     * reste donc valable pour toutes les exécutions suivantes de cette session.
+     *
+     * Il n'est plus jamais réécrit : publié une fois, entier, par `rename`.
+     * ═════════════════════════════════════════════════════════════════════════
      */
-    await rm(path.join(this.dir, INIT_SNAPSHOT), { force: true }).catch(() => undefined);
 
     this.currentStart = index;
     this.startedAt = Date.now();

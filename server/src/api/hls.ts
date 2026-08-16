@@ -35,6 +35,7 @@ import { staticInit, staticSegment, usableAudio } from '../transcode/audioStore.
 import { capacitesDe, type CapacitesClient } from '../playback/capacites.js';
 import { findMedia, resolvePlayback, type MediaRow, type ResolvedPlayback } from '../playback/resolve.js';
 import { outputGeometry } from '../transcode/encode.js';
+import { analyserEntete, pourquoiIncomplet } from '../transcode/enteteComplet.js';
 import { buildMasterPlaylist, estimateBandwidth, needsMaster } from '../transcode/manifest.js';
 import type { SessionManager } from '../transcode/manager.js';
 import { hdrPassthroughFor } from '../transcode/passthrough.js';
@@ -485,6 +486,30 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     const file = await session.ensureInit();
     if (file === null) {
       return reply.code(503).send({ error: session.status.error ?? 'ffmpeg n’a pas produit l’en-tête.' });
+    }
+
+    /*
+     * ═════════════════════════════════════════════════════════════════════════
+     * JAMAIS 200 SUR UN EN-TÊTE VIDE OU SANS `moov`.
+     *
+     * Un client ne peut pas distinguer un 200 à zéro octet d'un succès : hls.js
+     * l'accepte, ouvre un SourceBuffer sur rien, et la lecture ne démarre jamais
+     * — sans erreur, sans journal. C'est ce qui s'est produit, et le
+     * rechargement le masquait.
+     *
+     * `ensureInit` publie désormais son instantané par `rename`, donc ce
+     * contrôle ne devrait plus jamais se déclencher. Il reste parce qu'un
+     * en-tête tronqué est indétectable côté client : une vérification qui coûte
+     * la lecture d'un kilo-octet vaut mieux qu'un mode de panne muet.
+     *
+     * 503 et non 500 : ce n'est pas une faute du serveur, c'est un « pas encore
+     * prêt », et le lecteur sait réessayer sur un 503.
+     * ═════════════════════════════════════════════════════════════════════════
+     */
+    const etat = analyserEntete(await readFile(file));
+    if (!etat.complet) {
+      void reply.header('Cache-Control', 'no-store');
+      return reply.code(503).send({ error: `En-tête incomplet : ${pourquoiIncomplet(etat)}` });
     }
 
     return sendWorkFile(reply, file, 'video/mp4');
