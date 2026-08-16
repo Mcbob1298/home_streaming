@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
+import { CLIENT_PRUDENT } from './capacites.js';
 import { decidePlayback, directPlaySql, isRemuxable, mimeTypeFor, remuxSql, type PlayableFile } from './playability.js';
 
 const URLS = { file: '/api/stream/1', hls: '/api/hls/1/index.m3u8' };
 /** Le remux exige ffmpeg : la plupart des cas le supposent présent. */
-const WITH_FFMPEG = { remuxAvailable: true };
+/*
+ * Les capacités sont OBLIGATOIRES depuis qu un appelant les a omises en silence
+ * quatre fois de suite. `CLIENT_PRUDENT` est le repli sûr : c est ce que reçoit
+ * un client qui ne déclare rien, donc le cas par défaut à tester.
+ */
+const WITH_FFMPEG = { remuxAvailable: true, capacites: CLIENT_PRUDENT };
+const CLIENT_HEVC = { remuxAvailable: true, capacites: { hevc: true } };
 
 function file(overrides: Partial<PlayableFile> = {}): PlayableFile {
   return {
@@ -74,9 +81,7 @@ describe('decidePlayback — remux', () => {
   it('refuse honnêtement quand ffmpeg est absent', () => {
     // Proposer une source que rien ne saurait produire serait pire que de dire
     // non : le lecteur échouerait sans expliquer pourquoi.
-    const decision = decidePlayback(file({ extension: '.mkv', container: 'matroska' }), URLS, {
-      remuxAvailable: false,
-    });
+    const decision = decidePlayback(file({ extension: '.mkv', container: 'matroska' }), URLS, { remuxAvailable: false, capacites: CLIENT_PRUDENT });
     expect(decision.mode).toBe('unsupported');
     expect(decision.source).toBeNull();
     expect(decision.reason).toContain('FFMPEG_PATH');
@@ -110,6 +115,47 @@ describe('decidePlayback — transcodage', () => {
     );
     expect(decision.mode).toBe('transcode');
     expect(decision.source).toEqual({ url: URLS.hls, type: 'hls' });
+  });
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * LE TEXTE DOIT SUIVRE LA CAPACITÉ DU CLIENT — c'est ce qui manquait.
+   *
+   * La correction du texte était juste et atteignable, mais la route qui
+   * l'affiche ne transmettait pas la capacité : la fiche annonçait « réencodée
+   * en H.264 » pendant que le lecteur recevait du HEVC 2160p. Quatrième
+   * occurrence du même motif, et la première qu'un test aurait pu attraper.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  it('annonce le HEVC 10 bits à un client qui sait le décoder', () => {
+    const decision = decidePlayback(
+      file({ extension: '.mkv', container: 'matroska', videoCodec: 'hevc', hdr: 'HDR10' }),
+      URLS,
+      CLIENT_HEVC,
+    );
+    expect(decision.mode).toBe('transcode');
+    expect(decision.reason).toContain('HEVC 10 bits');
+    expect(decision.reason).toContain('HDR transporté intact');
+  });
+
+  it('annonce le H.264 à un client qui ne déclare rien', () => {
+    const decision = decidePlayback(
+      file({ extension: '.mkv', container: 'matroska', videoCodec: 'hevc', hdr: 'HDR10' }),
+      URLS,
+      WITH_FFMPEG,
+    );
+    expect(decision.reason).toContain('réencodée en H.264');
+    expect(decision.reason).not.toContain('HEVC 10 bits');
+  });
+
+  it('n’annonce PAS le transport HDR sur une source SDR, même à un client capable', () => {
+    // Le texte suit la règle complète, pas seulement la capacité du client.
+    const decision = decidePlayback(
+      file({ extension: '.mkv', container: 'matroska', videoCodec: 'hevc', hdr: null }),
+      URLS,
+      CLIENT_HEVC,
+    );
+    expect(decision.reason).toContain('réencodée en H.264');
   });
 
   it('ne réencode que les codecs que le navigateur ne décode pas', () => {

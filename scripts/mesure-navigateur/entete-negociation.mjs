@@ -106,6 +106,25 @@ try {
   const total = lignes.filter((v) => valeurDe(v.reseau) !== undefined || valeurDe(v.demandes) !== undefined).length;
   console.log(`\n   ${total}/${lignes.length} requêtes /api/ portent l’en-tête.`);
 
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * L'ÉCHO DU SERVEUR : LA SEULE PREUVE QU'IL A *REÇU* ET *LU* L'EN-TÊTE.
+   *
+   * Voir Chrome ÉMETTRE l'en-tête ne prouve que la moitié du chemin ; un
+   * mandataire pourrait le filtrer entre les deux. Le texte de playability, lui,
+   * est calculé par `decidePlayback` à partir de `options.clientDecodesHevc` —
+   * il ne peut mentionner le HEVC que si la valeur est arrivée ET a été lue.
+   *
+   * La requête part de la PAGE, donc avec l'en-tête que le client d'API pose,
+   * dans la même session que la lecture.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  const echo = await cdp.evaluer(
+    `fetch('/api/stream/${ID}/playability').then((r) => r.json()).then((j) => j.reason)`,
+  );
+  console.log('\n── CE QUE LE SERVEUR RÉPOND, sur ce que le navigateur lui a envoyé ──');
+  console.log(`   ${echo}`);
+
   const etat = await cdp.evaluer(
     `(() => { const v = window.__v; return v ? { l: v.videoWidth, h: v.videoHeight, t: +v.currentTime.toFixed(2) } : null; })()`,
   );

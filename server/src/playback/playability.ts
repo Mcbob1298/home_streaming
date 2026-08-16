@@ -17,6 +17,8 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
+import type { CapacitesClient } from './capacites.js';
+
 /**
  * Comment lire ce fichier.
  *
@@ -251,7 +253,7 @@ export interface PlaybackUrls {
 export function decidePlayback(
   file: PlayableFile,
   urls: PlaybackUrls,
-  options: { remuxAvailable?: boolean; clientDecodesHevc?: boolean } = {},
+  options: { remuxAvailable?: boolean; capacites: CapacitesClient },
 ): PlaybackDecision {
   const common = {
     mediaFileId: file.id,
@@ -352,7 +354,7 @@ export function decidePlayback(
      * tard, quand on cherche pourquoi un flux annoncé H.264 arrive en HEVC.
      * ═══════════════════════════════════════════════════════════════════════
      */
-    const hdrIntact = options.clientDecodesHevc === true && file.hdr === 'HDR10';
+    const hdrIntact = options.capacites.hevc && file.hdr === 'HDR10';
 
     return {
       ...common,

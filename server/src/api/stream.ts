@@ -20,6 +20,7 @@ import { readFile } from 'node:fs/promises';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { Db } from '../db/index.js';
+import { capacitesDe } from '../playback/capacites.js';
 import { mimeTypeFor, type PlaybackDecision } from '../playback/playability.js';
 import { preferenceFor, savePreference } from '../playback/preferences.js';
 import { findMedia as findResolvable, resolveDecision, tracksOf } from '../playback/resolve.js';
@@ -328,7 +329,14 @@ export function registerStreamRoutes(
       ffmpegBinary,
       media,
       { file: streamUrlOf(file.id), hls: hlsUrlOf(file.id) },
-      { transcodeAvailable: available },
+      /*
+       * Les capacités sont construites ICI, à la lisière HTTP, et passées en
+       * bloc. Elles manquaient : cette route rendait donc « réencodée en H.264 »
+       * sur un fichier servi en HEVC 10 bits, pendant que la route HLS disait
+       * vrai. Le commentaire ci-dessus annonçait ce défaut sans pouvoir
+       * l empêcher — c est le typage qui le ferme désormais.
+       */
+      { transcodeAvailable: available, capacites: capacitesDe(request.headers) },
     );
 
     const userId = currentUserId(db, request);

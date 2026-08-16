@@ -15,6 +15,7 @@
  */
 import { loadConfig, resolveDatabasePath } from '../config.js';
 import { openDatabase } from '../db/index.js';
+import { CLIENT_PRUDENT } from './capacites.js';
 import { decidePlayback, directPlaySql, type PlayableFile } from './playability.js';
 
 interface Row extends PlayableFile {
@@ -106,7 +107,7 @@ function main(): void {
    * correspondrait pas à ce que la route de playability répondrait.
    */
   const urls = { file: '', hls: '' };
-  const disagreeing = rows.filter((row) => decidePlayback(row, urls).mode !== 'direct');
+  const disagreeing = rows.filter((row) => decidePlayback(row, urls, { capacites: CLIENT_PRUDENT }).mode !== 'direct');
   if (disagreeing.length > 0) {
     console.log('');
     console.log(

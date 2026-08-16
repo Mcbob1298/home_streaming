@@ -32,7 +32,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import { AUDIO_DIR, loadConfig } from '../config.js';
 import type { Db } from '../db/index.js';
 import { staticInit, staticSegment, usableAudio } from '../transcode/audioStore.js';
-import { clientDecodesHevc } from '../playback/capacites.js';
+import { capacitesDe, type CapacitesClient } from '../playback/capacites.js';
 import { findMedia, resolvePlayback, type MediaRow, type ResolvedPlayback } from '../playback/resolve.js';
 import { outputGeometry } from '../transcode/encode.js';
 import { buildMasterPlaylist, estimateBandwidth, needsMaster } from '../transcode/manifest.js';
@@ -54,14 +54,14 @@ async function resolve(
   db: Db,
   manager: SessionManager,
   media: MediaRow,
-  hevc: boolean,
+  capacites: CapacitesClient,
 ): Promise<ResolvedPlayback> {
   return resolvePlayback(
     db,
     manager.ffmpegBinary,
     media,
     { file: streamUrlOf(media.id), hls: hlsUrlOf(media.id) },
-    { transcodeAvailable: true, clientDecodesHevc: hevc },
+    { transcodeAvailable: true, capacites },
   );
 }
 
@@ -218,7 +218,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     media: MediaRow;
     resolved: ResolvedPlayback;
     id: number;
-    hevc: boolean;
+    capacites: CapacitesClient;
   } | null> {
     const manager = requireManager(reply);
     if (manager === null) return null;
@@ -241,17 +241,17 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
      * au milieu d'une lecture, et le lecteur recevrait des segments que son
      * en-tête ne décrit pas.
      */
-    const hevc = clientDecodesHevc(request.headers);
+    const capacites = capacitesDe(request.headers);
 
-    return { manager, media, resolved: await resolve(db, manager, media, hevc), id, hevc };
+    return { manager, media, resolved: await resolve(db, manager, media, capacites), id, capacites };
   }
 
   /** La session du fichier, créée au besoin avec tout ce qu'il faut produire. */
-  async function acquire(manager: SessionManager, media: MediaRow, resolved: ResolvedPlayback, hevc: boolean) {
+  async function acquire(manager: SessionManager, media: MediaRow, resolved: ResolvedPlayback, capacites: CapacitesClient) {
     // La règle vit dans `passthrough.ts`, partagée avec la fabrication des
     // préludes : deux définitions divergeraient au premier changement.
     const hdrPassthrough = hdrPassthroughFor({
-      clientDecodesHevc: hevc,
+      clientDecodesHevc: capacites.hevc,
       source: resolved.source,
       mode: resolved.decision.mode === 'transcode' ? 'transcode' : 'remux',
     });
@@ -295,7 +295,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
      * qui met de toute façon quelques dizaines de millisecondes à analyser le
      * manifeste avant de réclamer le segment zéro.
      */
-    const session = await acquire(manager, media, resolved, found.hevc);
+    const session = await acquire(manager, media, resolved, found.capacites);
     if (session.status.state === 'idle') void session.startAt(0);
 
     /*
@@ -343,7 +343,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       hdrMaxHeight: manager.hdrMaxHeight,
       mode,
       sourceBitrate: media.bitrate,
-      hdrPassthrough: hdrPassthroughFor({ clientDecodesHevc: found.hevc, source: resolved.source, mode }),
+      hdrPassthrough: hdrPassthroughFor({ clientDecodesHevc: found.capacites.hevc, source: resolved.source, mode }),
     });
 
     return sendPlaylist(
@@ -369,7 +369,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
 
     if (resolved.plan.length === 0) return reply.code(409).send({ error: planFailure(resolved) });
 
-    const session = await acquire(manager, media, resolved, found.hevc);
+    const session = await acquire(manager, media, resolved, found.capacites);
     if (session.status.state === 'idle') void session.startAt(0);
 
     return sendPlaylist(reply, videoPlaylist(id, resolved));
@@ -481,7 +481,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     if (found === null) return reply;
     const { manager, media, resolved } = found;
 
-    const session = await acquire(manager, media, resolved, found.hevc);
+    const session = await acquire(manager, media, resolved, found.capacites);
     const file = await session.ensureInit();
     if (file === null) {
       return reply.code(503).send({ error: session.status.error ?? 'ffmpeg n’a pas produit l’en-tête.' });
@@ -504,7 +504,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     }
     if (index >= resolved.plan.length) return reply.code(404).send({ error: 'Segment hors du fichier.' });
 
-    const session = await acquire(manager, media, resolved, found.hevc);
+    const session = await acquire(manager, media, resolved, found.capacites);
     const file = await session.ensureSegment(index);
     if (file === null) {
       return reply.code(503).send({
@@ -545,7 +545,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       if (statique !== null) return sendWorkFile(reply, statique, 'video/mp4');
     }
 
-    const session = await acquire(manager, media, resolved, found.hevc);
+    const session = await acquire(manager, media, resolved, found.capacites);
     const file = await session.ensureAudioInit(stream);
     if (file === null) {
       return reply.code(503).send({
@@ -595,7 +595,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       }
     }
 
-    const session = await acquire(manager, media, resolved, found.hevc);
+    const session = await acquire(manager, media, resolved, found.capacites);
     const file = await session.ensureAudioSegment(stream, index);
     if (file === null) {
       return reply.code(503).send({

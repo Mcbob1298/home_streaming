@@ -18,6 +18,7 @@ import {
   type PlannedSegment,
 } from '../transcode/segments.js';
 import type { AudioRendition, SourceInfo } from '../transcode/session.js';
+import type { CapacitesClient } from './capacites.js';
 import { decidePlayback, type PlaybackDecision, type PlaybackUrls } from './playability.js';
 import {
   filterExposedAudio,
@@ -113,7 +114,7 @@ export async function resolveDecision(
   ffmpegBinary: string,
   media: MediaRow,
   urls: PlaybackUrls,
-  options: { transcodeAvailable: boolean; clientDecodesHevc?: boolean },
+  options: { transcodeAvailable: boolean; capacites: CapacitesClient },
 ): Promise<{ decision: PlaybackDecision; source: SourceInfo; tracks: TrackSelection }> {
   const enriched = await ensureDolbyVision(db, ffmpegBinary, media);
   const tracks = tracksOf(db, media.id);
@@ -136,7 +137,7 @@ export async function resolveDecision(
       hdr: enriched.hdr,
     },
     urls,
-    { remuxAvailable: options.transcodeAvailable, clientDecodesHevc: options.clientDecodesHevc === true },
+    { remuxAvailable: options.transcodeAvailable, capacites: options.capacites },
   );
 
   if (enriched.hdr === 'Dolby Vision' && enriched.dvProfile !== null) {
@@ -180,7 +181,7 @@ export async function resolvePlayback(
   ffmpegBinary: string,
   media: MediaRow,
   urls: PlaybackUrls,
-  options: { transcodeAvailable: boolean; clientDecodesHevc?: boolean },
+  options: { transcodeAvailable: boolean; capacites: CapacitesClient },
 ): Promise<ResolvedPlayback> {
   const { decision, source, tracks } = await resolveDecision(db, ffmpegBinary, media, urls, options);
   const enriched = media;

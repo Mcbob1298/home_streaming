@@ -41,6 +41,45 @@ import { HEVC_HEADER, HEVC_HEADER_RECU } from '../partage/entetes.js';
 
 export { HEVC_HEADER };
 
+/**
+ * CE QUE SAIT LE CLIENT, CONSTRUIT UNE FOIS À LA LISIÈRE HTTP.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * UN OBJET PASSÉ EN BLOC, ET NON DES CHAMPS COMPOSÉS PAR CHAQUE ROUTE.
+ *
+ * Quatre fois de suite, une valeur correctement lue à l'arrivée n'a pas été
+ * fournie par l'un de ses appelants : le plafond HDR, le débit de l'empreinte,
+ * la simulation des préludes, puis la capacité HEVC dans la route de playability
+ * — laquelle portait, juste au-dessus, un commentaire annonçant ce défaut exact.
+ * Un commentaire ne ferme rien.
+ *
+ * Le point commun des cas sains, relevé à l'audit : les commandes qui remplissent
+ * UN objet d'options puis le passent en bloc n'ont jamais perdu de champ. Celles
+ * qui composent leur appel champ par champ en ont perdu à chaque fois.
+ *
+ * D'où cette forme. Les routes ne composent plus rien : elles construisent les
+ * capacités une fois, à l'entrée, et les transmettent telles quelles.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export interface CapacitesClient {
+  /** Ce client décode-t-il le HEVC 10 bits (Main 10, niveau 5.1) ? */
+  hevc: boolean;
+}
+
+/**
+ * Les capacités d'un client dont on ne sait rien.
+ *
+ * Le repli sûr, nommé, pour les appelants qui n'ont pas de requête HTTP sous la
+ * main — une commande, un diagnostic. Les écrire `{ hevc: false }` à la volée
+ * marcherait aussi, mais ne dirait pas qu'il s'agit d'un choix.
+ */
+export const CLIENT_PRUDENT: CapacitesClient = Object.freeze({ hevc: false });
+
+/** Les capacités portées par une requête. À appeler UNE fois, à la lisière. */
+export function capacitesDe(headers: Record<string, unknown>): CapacitesClient {
+  return { hevc: clientDecodesHevc(headers) };
+}
+
 /** Les valeurs qui valent OUI. Tout le reste, y compris l'absence, vaut non. */
 const OUI = new Set(['1', 'true', 'yes', 'oui']);
 

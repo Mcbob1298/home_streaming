@@ -138,7 +138,9 @@ export async function fabriquerPrelude(o: OptionsFabrication): Promise<ResultatP
     o.capabilities.binary,
     media,
     { file: `/api/stream/${media.id}`, hls: `/api/hls/${media.id}/index.m3u8` },
-    { transcodeAvailable: true },
+    // La variante fabriquée EST la capacité supposée du client : un prélude
+    // HEVC pour un client capable, tone-mappé pour les autres.
+    { transcodeAvailable: true, capacites: { hevc: !o.pourClientSdr } },
   );
 
   if (resolved.plan.length === 0) {

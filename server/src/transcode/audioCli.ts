@@ -20,6 +20,7 @@ import path from 'node:path';
 
 import { AUDIO_DIR, DATA_DIR, loadConfig, loadEnvFile, resolveDatabasePath } from '../config.js';
 import { openDatabase } from '../db/index.js';
+import { CLIENT_PRUDENT } from '../playback/capacites.js';
 import { findMedia, resolvePlayback } from '../playback/resolve.js';
 import { buildMultiAudioArgs } from './args.js';
 import { audioDirOf, audioSignature, MANIFEST_NAME, type AudioManifest } from './audioStore.js';
@@ -85,7 +86,9 @@ async function main(): Promise<void> {
     capabilities.binary,
     media,
     { file: `/api/stream/${media.id}`, hls: `/api/hls/${media.id}/index.m3u8` },
-    { transcodeAvailable: true },
+    // Aucune requête HTTP ici, et le magasin audio ne dépend pas du codec
+    // vidéo : le repli sûr est le bon choix, et il est nommé.
+    { transcodeAvailable: true, capacites: CLIENT_PRUDENT },
   );
 
   if (resolved.audioRenditions.length === 0) {
