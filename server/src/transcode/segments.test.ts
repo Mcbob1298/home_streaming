@@ -11,6 +11,7 @@ import {
   planAudioSegments,
   planFromKeyframes,
   planSegments,
+  premierSegmentAbsent,
   primerSegments,
   segmentFileName,
   segmentIndexAt,
@@ -395,5 +396,50 @@ describe('buildRemuxArgs', () => {
     const args = buildRemuxArgs(base);
     expect(args.indexOf('-probesize')).toBeLessThan(args.indexOf('-i'));
     expect(args.indexOf('-analyzeduration')).toBeLessThan(args.indexOf('-i'));
+  });
+});
+
+describe('premierSegmentAbsent — le disque a raison', () => {
+  /** Un faux disque : l'ensemble des chemins qui existent. */
+  const disque = (indices: number[]) => {
+    const presents = new Set(indices.map((i) => `/s/${segmentFileName(i)}`));
+    return (chemin: string) => presents.has(chemin);
+  };
+
+  it('rend 0 quand rien n’est là — le cas sans prélude', () => {
+    expect(premierSegmentAbsent('/s', 100, disque([]))).toBe(0);
+  });
+
+  it('rend la fin du prélude quand il couvre le début', () => {
+    // Huit segments posés : la croisière démarre au neuvième.
+    expect(premierSegmentAbsent('/s', 100, disque([0, 1, 2, 3, 4, 5, 6, 7]))).toBe(8);
+  });
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * LE CAS QUI JUSTIFIE DE LIRE LE DISQUE PLUTÔT QUE LE MANIFESTE.
+   *
+   * Un prélude dont un segment manque — effacement partiel, publication
+   * interrompue, grille changée sans régénération. Se fier à son manifeste ferait
+   * démarrer la croisière APRÈS le trou, et personne ne comblerait jamais celui-ci :
+   * le lecteur le réclamerait en cours de lecture et attendrait trente secondes.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  it('s’arrête au TROU, pas après', () => {
+    expect(premierSegmentAbsent('/s', 100, disque([0, 1, 2, 5, 6, 7]))).toBe(3);
+  });
+
+  it('ignore ce qui est présent au-delà du trou', () => {
+    // Des segments d'une session précédente, plus loin : ils ne comblent rien.
+    expect(premierSegmentAbsent('/s', 100, disque([0, 40, 41, 42]))).toBe(1);
+  });
+
+  it('ne dépasse jamais la longueur du plan', () => {
+    const tout = Array.from({ length: 10 }, (_, i) => i);
+    expect(premierSegmentAbsent('/s', 10, disque(tout))).toBe(10);
+  });
+
+  it('rend 0 sur un plan vide', () => {
+    expect(premierSegmentAbsent('/s', 0, disque([]))).toBe(0);
   });
 });

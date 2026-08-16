@@ -143,6 +143,37 @@ export function primerSegments(plan: PlannedSegment[]): number {
   return n;
 }
 
+/**
+ * Le premier segment que le répertoire NE porte PAS, en partant de zéro.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * C'EST LE DISQUE QUI DÉCIDE, PAS UNE CONSTANTE NI LE PLAN ATTENDU.
+ *
+ * Sert à démarrer la croisière là où le prélude s'arrête, au lieu de réencoder
+ * ce qu'il vient de poser — seize secondes de moteur par démarrage sur Avatar.
+ *
+ * Le prélude annonce huit segments dans son manifeste, et le plan en attend huit
+ * avant vingt-six secondes. Se fier à l'un des deux serait un pari : un prélude
+ * partiellement effacé, une grille changée sans régénération, une publication
+ * interrompue, et la croisière démarrerait APRÈS un segment absent — un trou que
+ * rien ne comblerait, puisque personne ne le réclamerait avant la lecture.
+ *
+ * On s'arrête donc au premier manquant. Le pire cas devient « quelques segments
+ * déjà présents sont réencodés », c'est-à-dire le comportement d'avant. Jamais
+ * « il manque un segment au milieu ».
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export function premierSegmentAbsent(
+  dir: string,
+  total: number,
+  existe: (chemin: string) => boolean,
+): number {
+  for (let index = 0; index < total; index += 1) {
+    if (!existe(`${dir}/${segmentFileName(index)}`)) return index;
+  }
+  return total;
+}
+
 /** Trois décimales : la précision d'un EXTINF, sans bruit de virgule flottante. */
 function round(value: number): number {
   return Number(value.toFixed(3));

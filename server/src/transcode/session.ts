@@ -39,6 +39,7 @@ import {
   AUDIO_SEGMENT_DURATION,
   INIT_FILE_NAME,
   SEGMENT_DURATION,
+  premierSegmentAbsent,
   segmentFileName,
   type PlannedSegment,
 } from './segments.js';
@@ -234,6 +235,35 @@ class SegmentProducer {
       const poses = await seedFromPrelude(this.preludeDir, this.dir);
       if (poses > 0) this.options.onLog('prélude posé', { sortie: this.label, fichiers: poses });
     }
+  }
+
+  /**
+   * Le premier segment que le disque NE porte PAS, en partant de zéro.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * C'EST LE DISQUE QUI DÉCIDE, PAS UNE CONSTANTE NI LE PLAN ATTENDU.
+   *
+   * Le prélude annonce huit segments dans son manifeste, et le plan en attend
+   * huit avant vingt-six secondes. Si l'un des deux se trompait — prélude
+   * partiellement effacé, grille changée sans régénération, publication
+   * interrompue — démarrer la croisière sur cette foi laisserait un TROU que
+   * rien ne comblerait : ffmpeg partirait après un segment absent.
+   *
+   * On compte donc ce qui est réellement là, et on s'arrête au premier manquant.
+   * Le pire cas devient « on réencode quelques segments déjà présents », c'est-
+   * à-dire le comportement d'avant — jamais « il manque un segment au milieu ».
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  /**
+   * Où la croisière doit commencer quand personne n'a demandé de position.
+   *
+   * Sans prélude, zéro — le comportement d'hier, inchangé. Avec un prélude, la
+   * fin de ce qu'il couvre : réencoder ses segments coûtait ~16 s de moteur par
+   * démarrage (17,9 s contre 1,83 s pour atteindre le premier segment neuf), sur
+   * la ressource même que le prélude cherche à soulager.
+   */
+  debutDeCroisiere(): number {
+    return premierSegmentAbsent(this.dir, this.plan.length, existsSync);
   }
 
   /**
@@ -643,6 +673,32 @@ export class TranscodeSession {
 
   async startAt(index: number): Promise<void> {
     return this.video.startAt(index);
+  }
+
+  /**
+   * Démarre la croisière là où le prélude s'arrête — ou à zéro s'il n'y en a pas.
+   *
+   * ═════════════════════════════════════════════════════════════════════════════
+   * LE PRÉLUDE MASQUAIT LE DÉMARRAGE SANS DISPENSER D'AUCUN ENCODAGE.
+   *
+   * La route démarrait la croisière à zéro, et ffmpeg réencodait consciencieusement
+   * les vingt-six secondes que le prélude venait de poser sur le disque. Mesuré sur
+   * Avatar, temps pour atteindre le premier segment que le prélude NE fournit pas :
+   *
+   *     depuis zéro                  17,9 s
+   *     depuis la fin du prélude      1,83 s
+   *
+   * Seize secondes de moteur par démarrage, dépensées à reproduire des octets déjà
+   * écrits — sur la ressource même que le prélude existe pour soulager, et avec
+   * quatre sessions simultanées au plafond.
+   *
+   * Le prix : la jonction passe d'INTERNE à un run à une frontière ENTRE DEUX RUNS.
+   * C'est le cas pour lequel le prélude a été conçu, et l'invariant `tfdt` le
+   * couvre — mais cela se mesure dans un navigateur, cela ne se déduit pas.
+   * ═════════════════════════════════════════════════════════════════════════════
+   */
+  async demarrer(): Promise<void> {
+    return this.video.startAt(this.video.debutDeCroisiere());
   }
 
   // --- Audio ---------------------------------------------------------------

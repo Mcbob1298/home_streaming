@@ -297,7 +297,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
      * manifeste avant de réclamer le segment zéro.
      */
     const session = await acquire(manager, media, resolved, found.capacites);
-    if (session.status.state === 'idle') void session.startAt(0);
+    if (session.status.state === 'idle') void session.demarrer();
 
     /*
      * Un fichier à une seule piste audio et sans sous-titre exposable n'a rien
@@ -371,7 +371,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     if (resolved.plan.length === 0) return reply.code(409).send({ error: planFailure(resolved) });
 
     const session = await acquire(manager, media, resolved, found.capacites);
-    if (session.status.state === 'idle') void session.startAt(0);
+    if (session.status.state === 'idle') void session.demarrer();
 
     return sendPlaylist(reply, videoPlaylist(id, resolved));
   });
