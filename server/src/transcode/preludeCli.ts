@@ -64,7 +64,15 @@ async function main(): Promise<void> {
   });
 
   console.log('\n──────────────────────────────────────────────');
-  if (resultat.etat === 'deja-valable') {
+  if (resultat.etat === 'simule') {
+    /*
+     * Le cas manquait, et la commande n'imprimait qu'un séparateur. Une
+     * simulation muette ne se distingue pas d'une commande qui n'a rien fait —
+     * ce qui est précisément la question qu'elle est censée trancher.
+     */
+    console.log(`SIMULATION         : rien n’a été encodé.`);
+    console.log(`À fabriquer        : ${resultat.nom}`);
+  } else if (resultat.etat === 'deja-valable') {
     console.log(`Déjà valable       : ${resultat.nom}`);
   } else if (resultat.etat === 'fabrique') {
     console.log(`Prélude publié     : ${resultat.dir}`);
