@@ -151,6 +151,10 @@ web/                   interface — React + Vite + Tailwind
 Les chemins relatifs sont résolus depuis la racine du dépôt, jamais depuis le
 dossier courant : `npm run scan` donne le même résultat où qu'on le lance.
 
+La section `transcode` porte les réglages de lecture. Deux méritent d'être
+connus : `hdrMaxHeight`, le plafond du transport HDR intact, et
+`hevcClientFiles`, son périmètre — tous deux détaillés sous « Lecture ».
+
 > **La base SQLite reste toujours en local.** Écrire une base SQLite sur un
 > partage SMB est une source connue de corruption : le verrouillage de fichiers
 > réseau n'offre pas les garanties dont SQLite a besoin. `databasePath` doit
