@@ -36,6 +36,7 @@ Puis ouvrez http://localhost:5173.
 | `npm run cleanup` | Supprime les œuvres sans fichier et les images inutilisées             |
 | `npm run playable` | **Temporaire** — liste les fichiers lisibles sans transcodage          |
 | `npm run keyframes` | Indexe les images clés, nécessaire au découpage HLS du remux          |
+| `npm run preludes` | Fabrique les préludes d une population (`-- --hdr`). Relançable        |
 | `npm run migrate-paths` | Réécrit les chemins d'une racine à l'autre (Windows → NAS)        |
 | `npm test`      | Tests unitaires du parser                                                |
 | `npm run build` | Compile le serveur (`server/dist`) et l'interface (`web/dist`)           |
@@ -151,9 +152,10 @@ web/                   interface — React + Vite + Tailwind
 Les chemins relatifs sont résolus depuis la racine du dépôt, jamais depuis le
 dossier courant : `npm run scan` donne le même résultat où qu'on le lance.
 
-La section `transcode` porte les réglages de lecture. Deux méritent d'être
-connus : `hdrMaxHeight`, le plafond du transport HDR intact, et
-`hevcClientFiles`, son périmètre — tous deux détaillés sous « Lecture ».
+La section `transcode` porte les réglages de lecture. Un seul mérite d'être
+connu : `hdrMaxHeight`, le plafond du transport HDR intact, détaillé sous
+« Lecture ». Le PÉRIMÈTRE de ce transport, lui, ne se configure pas — il se
+négocie avec chaque client.
 
 > **La base SQLite reste toujours en local.** Écrire une base SQLite sur un
 > partage SMB est une source connue de corruption : le verrouillage de fichiers
@@ -557,6 +559,50 @@ conservées, et c'est le lecteur — qui connaît l'écran, ce que le serveur ig
 — qui décide du rendu. C'est la voie que Plex emploie sur cette machine, relevée
 dans sa ligne de commande réelle.
 
+#### La capacité se négocie, elle ne se configure pas
+
+Trois conditions, et la première porte sur le CLIENT :
+
+1. **ce navigateur décode le HEVC 10 bits** ;
+2. la source est en **HDR10** — le Dolby Vision est écarté, ses métadonnées
+   dynamiques ne survivraient pas au réencodage et aucun navigateur ne les
+   décode en MSE ;
+3. le fichier est **réencodé** — un remux copie le flux, il n'y a rien à décider.
+
+Le lecteur répond à la première en interrogeant
+`MediaSource.isTypeSupported('hvc1.2.4.L153.B0')` — et la forme `hev1`, que le
+flux produit porte et que certains navigateurs sont seuls à accepter. Il pose
+ensuite la réponse dans un en-tête `X-Client-Hevc` sur **chacune** de ses
+requêtes, via le `xhrSetup` de hls.js.
+
+> **Jamais `canPlayType`.** Il répond « maybe » pour des flux qu'il ne lit pas,
+> et ce « maybe » lu comme un oui a déjà coûté des semaines ici : hls.js n'était
+> jamais chargé et rien ne le signalait. `isTypeSupported` est de toute façon la
+> question que hls.js pose lui-même avant d'ouvrir un `SourceBuffer`.
+
+**Pourquoi un en-tête et non un paramètre d'URL** : le manifeste maître, les
+playlists de rendu et chaque segment passent par des routes qui peuvent toutes
+créer la session. Une seule qui arriverait sans la capacité — une session
+expirée puis recréée par une requête de segment — ferait repartir le serveur
+dans l'autre codec au milieu de la lecture. Un paramètre devrait être propagé
+dans chaque URL émise ; `xhrSetup` couvre tout en un seul endroit.
+
+**Le repli est sûr par construction.** Seul un oui EXPLICITE vaut oui : un
+client qui ne dit rien, un `0`, un mandataire qui filtre l'en-tête, `curl`,
+reçoivent tous le H.264 tone-mappé, que tout décode. Sur des appareils qu'on ne
+connaît pas, mieux vaut une image moins bonne qu'une image absente.
+
+**Les sessions sont distinctes par capacité.** Deux spectateurs du même film sur
+des appareils différents obtiennent deux sessions et deux répertoires de
+travail : sans cela, le second recevrait les segments produits pour le premier,
+dans un codec que son en-tête d'initialisation ne décrit pas.
+
+> Ce mécanisme **remplace** `transcode.hevcClientFiles`, une liste
+> d'identifiants qui a été supprimée plutôt que gardée en secours. Elle répondait
+> à « ce FICHIER est-il concerné » là où la seule question qui compte est « ce
+> CLIENT sait-il décoder », et deux mécanismes qui décident de la même chose
+> finissent toujours par décider différemment.
+
 `transcode.hdrMaxHeight` plafonne la définition de **ce chemin uniquement** :
 
 ```json
@@ -579,7 +625,28 @@ Deux règles ne dépendent d'aucun réglage :
 
 Baisser `hdrMaxHeight` **invalide les préludes du transport HDR**, et eux seuls :
 la géométrie de sortie entre dans leur empreinte. Les regénérer avec
-`npm run prelude -- --file <id>`.
+`npm run prelude -- --file <id>`, ou `npm run preludes -- --hdr` pour toute la
+population HDR10 d'un coup.
+
+#### Fabriquer les préludes en lot
+
+```bash
+npm run preludes -- --hdr --dry   # ce qui serait fait, sans rien encoder
+npm run preludes -- --hdr         # les 70 fichiers HDR10 — ~25 min, ~2,2 Go
+npm run preludes -- --hdr --sdr   # leur variante tone-mappée
+npm run preludes -- --files 1,2,3 # une liste explicite
+```
+
+**Un prélude déjà valable est sauté.** La commande est donc relançable après une
+interruption sans refaire le travail, et sert de rattrapage après un changement
+de réglage qui n'invalide qu'une partie des préludes.
+
+Une commande n'a pas de client : elle doit donc choisir POUR QUI elle fabrique.
+Par défaut c'est la variante du client capable — le seul cas où la 4K est en jeu.
+Ce choix est sans danger : une session tone-mappée qui trouve un prélude HEVC
+voit une empreinte qui ne correspond pas, le refuse, et démarre comme avant. Le
+pire cas reste « la lecture démarre un peu moins vite », jamais « la lecture
+saute ».
 
 ### Ce que la 4K coûte, mesuré
 

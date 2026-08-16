@@ -23,6 +23,8 @@
     "test": "npm --prefix server run test && npm --prefix web run test",
     "//prelude": "Palier 4 : encode et conserve les premieres secondes d un fichier, pour un demarrage immediat.",
     "prelude": "npm --prefix server run prelude --",
+    "//preludes": "Fabrique les preludes de toute une population : --hdr pour les 70 fichiers HDR10. Relancable, un prelude deja valable est saute.",
+    "preludes": "npm --prefix server run preludes --",
     "//audio": "Pre-genere les pistes audio d un fichier en segments HLS statiques.",
     "audio": "npm --prefix server run audio --"
   },

@@ -38,8 +38,28 @@ export interface ManagerOptions {
   onLog: SessionOptions['onLog'];
 }
 
+/**
+ * Clé d'une session.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * L'IDENTIFIANT DU FICHIER NE SUFFIT PLUS : LA SORTIE DÉPEND AUSSI DU CLIENT.
+ *
+ * Depuis que la capacité HEVC se négocie, un même fichier a deux sorties
+ * possibles — HEVC 10 bits intact, ou H.264 tone-mappé. Une session par
+ * `mediaFileId` les ferait partager : le second spectateur recevrait les
+ * segments produits pour le premier, dans un codec que son en-tête ne décrit
+ * pas. Sur un serveur ouvert à la famille, sur des appareils inconnus, c'est le
+ * mode de panne à empêcher avant qu'il n'arrive.
+ *
+ * La clé porte donc la capacité, et le répertoire de travail avec elle.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+function cleDe(mediaFileId: number, hdrPassthrough: boolean): string {
+  return `${mediaFileId}:${hdrPassthrough ? 'hdr' : 'sdr'}`;
+}
+
 export class SessionManager {
-  private readonly sessions = new Map<number, TranscodeSession>();
+  private readonly sessions = new Map<string, TranscodeSession>();
   private readonly waiting: (() => void)[] = [];
   private sweeper: NodeJS.Timeout | null = null;
 
@@ -110,7 +130,8 @@ export class SessionManager {
    * ffmpeg plutôt que d'en lancer deux qui produiraient les mêmes segments.
    */
   async acquire(input: SessionInput): Promise<TranscodeSession> {
-    const existing = this.sessions.get(input.mediaFileId);
+    const cle = cleDe(input.mediaFileId, input.hdrPassthrough === true);
+    const existing = this.sessions.get(cle);
     if (existing !== undefined) {
       existing.touch();
       return existing;
@@ -145,7 +166,7 @@ export class SessionManager {
 
     const session = new TranscodeSession({ ...input, preludeDir }, options);
     await session.prepare();
-    this.sessions.set(input.mediaFileId, session);
+    this.sessions.set(cle, session);
     return session;
   }
 
@@ -163,7 +184,7 @@ export class SessionManager {
       // Une session inactive depuis plus de deux secondes n'est regardée par
       // personne : le lecteur réclame un segment bien plus souvent que ça.
       if (oldest !== undefined && oldest.idleMs > 2000) {
-        await this.release(oldest.mediaFileId, 'place libérée pour une autre lecture');
+        await this.releaseSession(oldest, 'place libérée pour une autre lecture');
         continue;
       }
 
@@ -185,13 +206,25 @@ export class SessionManager {
     });
   }
 
+  /**
+   * Ferme TOUTES les sessions d'un fichier, quelle qu'en soit la capacité.
+   *
+   * Le lecteur qui s'en va ne connaît que l'identifiant du fichier ; il ne sait
+   * rien des variantes ouvertes. Fermer la seule qui correspond à sa capacité
+   * laisserait l'autre tourner jusqu'à l'expiration.
+   */
   async release(mediaFileId: number, reason: string): Promise<void> {
-    const session = this.sessions.get(mediaFileId);
-    if (session === undefined) return;
+    for (const session of [...this.sessions.values()]) {
+      if (session.mediaFileId === mediaFileId) await this.releaseSession(session, reason);
+    }
+  }
 
-    this.sessions.delete(mediaFileId);
+  private async releaseSession(session: TranscodeSession, reason: string): Promise<void> {
+    for (const [cle, candidate] of this.sessions) {
+      if (candidate === session) this.sessions.delete(cle);
+    }
     await session.close();
-    this.options.onLog('session fermée', { mediaFileId, reason });
+    this.options.onLog('session fermée', { mediaFileId: session.mediaFileId, reason });
 
     this.waiting.shift()?.();
   }
@@ -201,7 +234,7 @@ export class SessionManager {
     const limit = this.options.idleSeconds * 1000;
     for (const session of [...this.sessions.values()]) {
       if (session.idleMs > limit) {
-        await this.release(session.mediaFileId, `inactive depuis ${Math.round(session.idleMs / 1000)} s`);
+        await this.releaseSession(session, `inactive depuis ${Math.round(session.idleMs / 1000)} s`);
       }
     }
   }
@@ -211,7 +244,11 @@ export class SessionManager {
     if (this.sweeper !== null) clearInterval(this.sweeper);
     this.sweeper = null;
 
-    await Promise.all([...this.sessions.keys()].map((id) => this.release(id, 'arrêt du serveur')));
+    // Sur les SESSIONS et non sur les clés : `release` prend un identifiant de
+    // fichier, et une clé porte désormais aussi la variante.
+    await Promise.all(
+      [...this.sessions.values()].map((session) => this.releaseSession(session, 'arrêt du serveur')),
+    );
     await rm(this.options.workDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }

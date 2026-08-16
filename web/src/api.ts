@@ -4,6 +4,7 @@
  * Les types reprennent exactement ce que renvoie le serveur : si l'API change,
  * TypeScript signale les pages à corriger.
  */
+import { enTeteCapacites } from './capacites.js';
 
 export interface Library {
   id: string;
@@ -449,8 +450,8 @@ export interface ListParams {
   playable?: 'direct';
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+async function getJson<T>(url: string, headers?: Record<string, string>): Promise<T> {
+  const response = await fetch(url, headers === undefined ? undefined : { headers });
   if (!response.ok) {
     const message = await response.text();
     throw new Error(`${response.status} — ${message || response.statusText}`);
@@ -495,8 +496,16 @@ export const api = {
   shows: (params: ListParams) => getJson<Page<ShowSummary>>(`/api/shows${buildQuery(params)}`),
   movie: (id: number | string) => getJson<MovieDetail>(`/api/movies/${id}`),
   show: (id: number | string) => getJson<ShowDetail>(`/api/shows/${id}`),
+  /**
+   * La capacité HEVC accompagne CETTE requête aussi, pas seulement le manifeste.
+   *
+   * C'est elle qui produit le texte affiché à l'utilisateur — « réencodée en
+   * H.264 » ou « en HEVC 10 bits, HDR intact ». Sans l'en-tête, la page
+   * annoncerait un chemin et le lecteur en recevrait un autre : exactement le
+   * genre d'écart qui fait perdre des heures trois mois plus tard.
+   */
   playability: (mediaFileId: number | string) =>
-    getJson<Playability>(`/api/stream/${mediaFileId}/playability`),
+    getJson<Playability>(`/api/stream/${mediaFileId}/playability`, enTeteCapacites()),
 
   /**
    * Mémorise un choix de piste.

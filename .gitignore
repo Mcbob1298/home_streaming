@@ -14,3 +14,6 @@ data/
 # Réglages Claude Code propres à la machine (chemins absolus).
 # .claude/settings.json, lui, est partagé et versionné.
 .claude/settings.local.json
+
+# Cache incrémental de tsc, produit par « tsc -b ». Local, jamais partagé.
+*.tsbuildinfo

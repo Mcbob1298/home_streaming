@@ -19,6 +19,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "prelude": "tsx src/transcode/preludeCli.ts",
+    "preludes": "tsx src/transcode/preludesCli.ts",
     "audio": "tsx src/transcode/audioCli.ts"
   },
   "dependencies": {

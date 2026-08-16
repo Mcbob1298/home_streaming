@@ -35,23 +35,6 @@ export interface TranscodeConfig {
   /** Une session sans requête depuis ce délai est tuée. */
   idleSeconds: number;
   /**
-   * Fichiers dont le HDR est TRANSPORTÉ INTACT, sans tone mapping.
-   *
-   * ═══════════════════════════════════════════════════════════════════════════
-   * UNE LISTE, ET NON UNE RÈGLE — C'EST DÉLIBÉRÉ ET TEMPORAIRE.
-   *
-   * La règle finale sera « le client sait décoder le HEVC 10 bits », négociée au
-   * démarrage de la lecture. Tant qu'elle n'existe pas, une règle fondée sur le
-   * seul HDR de la source basculerait les 164 fichiers HDR d'un coup, alors
-   * qu'un seul est en cours de validation.
-   *
-   * La liste tient donc le périmètre : ce qui n'y figure pas garde EXACTEMENT
-   * le chemin d'avant — même encodeur, même tone mapping, même empreinte de
-   * prélude. À remplacer par la négociation, pas à étendre fichier par fichier.
-   * ═══════════════════════════════════════════════════════════════════════════
-   */
-  hevcClientFiles: number[];
-  /**
    * Hauteur maximale produite par le TRANSPORT HDR INTACT.
    *
    * ═══════════════════════════════════════════════════════════════════════════
@@ -95,8 +78,6 @@ const DEFAULT_TRANSCODE: TranscodeConfig = {
   // sans que la quatrième n'apporte quoi que ce soit.
   maxSessions: 3,
   idleSeconds: 60,
-  // Vide par défaut : sans mention explicite, aucun fichier ne change de chemin.
-  hevcClientFiles: [],
   // 4K : une source 4K est lue en 4K. « On ne monte jamais » vient d'outputHeight.
   hdrMaxHeight: 2160,
 };
@@ -256,15 +237,8 @@ function validateTranscode(raw: unknown): TranscodeConfig {
   if (typeof raw !== 'object') fail('config.json : "transcode" doit être un objet.');
 
   const section = raw as Record<string, unknown>;
-  const { workDir, maxSessions, idleSeconds, hevcClientFiles, hdrMaxHeight } = section;
+  const { workDir, maxSessions, idleSeconds, hdrMaxHeight } = section;
 
-  if (
-    hevcClientFiles !== undefined &&
-    (!Array.isArray(hevcClientFiles) ||
-      !hevcClientFiles.every((v) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0))
-  ) {
-    fail('config.json : "transcode.hevcClientFiles" doit être une liste d’identifiants entiers.');
-  }
 
   /*
    * Bornes larges, mais bornes quand même : une valeur négative ou fantaisiste
@@ -292,9 +266,6 @@ function validateTranscode(raw: unknown): TranscodeConfig {
     workDir: typeof workDir === 'string' ? workDir.trim() : DEFAULT_TRANSCODE.workDir,
     maxSessions: typeof maxSessions === 'number' ? Math.floor(maxSessions) : DEFAULT_TRANSCODE.maxSessions,
     idleSeconds: typeof idleSeconds === 'number' ? Math.floor(idleSeconds) : DEFAULT_TRANSCODE.idleSeconds,
-    hevcClientFiles: Array.isArray(hevcClientFiles)
-      ? (hevcClientFiles as number[])
-      : DEFAULT_TRANSCODE.hevcClientFiles,
     hdrMaxHeight: typeof hdrMaxHeight === 'number' ? Math.floor(hdrMaxHeight) : DEFAULT_TRANSCODE.hdrMaxHeight,
   };
 }

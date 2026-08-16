@@ -525,7 +525,13 @@ export class TranscodeSession {
     this.input = input;
     this.options = options;
     this.mediaFileId = input.mediaFileId;
-    this.dir = path.join(options.workDir, `mf-${input.mediaFileId}`);
+    /*
+     * Le répertoire porte la variante : deux sessions du même fichier — l'une
+     * HEVC intacte, l'autre tone-mappée — écriraient sinon leurs segments l'une
+     * sur l'autre, sous les mêmes noms.
+     */
+    const variante = input.hdrPassthrough === true ? '-hdr' : '';
+    this.dir = path.join(options.workDir, `mf-${input.mediaFileId}${variante}`);
 
     this.video = new SegmentProducer(
       path.join(this.dir, 'v'),

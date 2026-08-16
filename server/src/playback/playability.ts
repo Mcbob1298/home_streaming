@@ -339,11 +339,29 @@ export function decidePlayback(
       };
     }
 
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * LE TEXTE DOIT DIRE CE QU'ON SERT, PAS CE QU'ON SERVAIT AVANT.
+     *
+     * Il annonçait « la vidéo est réencodée en H.264 » pour TOUS les
+     * transcodages, y compris ceux qui partent en HEVC 10 bits avec leur HDR
+     * intact. Un fichier mentait ainsi depuis l'arrivée du transport HDR, et
+     * soixante-dix l'auraient fait après l'ouverture à la bibliothèque.
+     *
+     * Ce genre d'écart ne se paie pas le jour même : il se paie trois mois plus
+     * tard, quand on cherche pourquoi un flux annoncé H.264 arrive en HEVC.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const hdrIntact = options.clientDecodesHevc === true && file.hdr === 'HDR10';
+
     return {
       ...common,
       mode: 'transcode',
       source: { url: urls.hls, type: 'hls' },
-      reason: `${capitalize(joinFrench(blockers))} : la vidéo est réencodée en H.264.`,
+      reason: hdrIntact
+        ? `${capitalize(joinFrench(blockers))} : la vidéo est réencodée en HEVC 10 bits, ` +
+          'son HDR transporté intact jusqu’à votre écran.'
+        : `${capitalize(joinFrench(blockers))} : la vidéo est réencodée en H.264.`,
     };
   }
 

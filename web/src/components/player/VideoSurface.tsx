@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { PlaybackSource, SubtitleOption, SubtitleTrack, TrackOption } from '../../api';
+import { enTeteCapacites } from '../../capacites.js';
 
 /**
  * Le sous-titre affiché, quelle qu'en soit la provenance.
@@ -103,6 +104,26 @@ function nativeAudioTracks(video: HTMLVideoElement | null): NativeAudioTrackList
  * abandonneraient bien trop tôt.
  */
 const HLS_CONFIG = {
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * L'EN-TÊTE DE CAPACITÉ EST POSÉ SUR *TOUTES* LES REQUÊTES, ET C'EST LE POINT.
+   *
+   * Le manifeste maître, les playlists de rendu et chaque segment passent par
+   * des routes qui peuvent toutes créer la session côté serveur. Si une seule
+   * d'entre elles arrivait sans l'en-tête — une session expirée puis recréée par
+   * une requête de segment, par exemple — le serveur repartirait sur l'autre
+   * codec au milieu de la lecture, et le lecteur recevrait des segments que son
+   * en-tête d'initialisation ne décrit pas.
+   *
+   * `xhrSetup` est le seul endroit où poser la réponse pour tout ce que hls.js
+   * demande. C'est aussi pourquoi la capacité voyage en en-tête plutôt qu'en
+   * paramètre d'URL : un paramètre devrait être propagé dans chaque URL émise
+   * par le serveur, y compris celles des segments listées dans les playlists.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  xhrSetup: (xhr: XMLHttpRequest) => {
+    for (const [nom, valeur] of Object.entries(enTeteCapacites())) xhr.setRequestHeader(nom, valeur);
+  },
   // Une seule qualité par session : rien à choisir, rien à estimer.
   enableWorker: true,
   lowLatencyMode: false,
