@@ -98,7 +98,7 @@ emporterait le piège avec lui.
 
 ## Les mesures qui ont menti
 
-Ces instruments existent parce que **huit diagnostics successifs se sont révélés
+Ces instruments existent parce que **neuf diagnostics successifs se sont révélés
 faux, et chaque fois c'est la mesure qui était fausse, pas le code**. La liste
 n'est pas une confession : c'est la spécification négative de l'outil. Avant
 d'accuser le serveur, vérifier qu'on n'est pas en train de refaire l'une d'elles.
@@ -152,7 +152,35 @@ d'accuser le serveur, vérifier qu'on n'est pas en train de refaire l'une d'elle
    point entre 3 et 6,9**. Une phase s'ATTEND (`currentTime mod 8` dans une
    tolérance), elle ne se demande pas.
 
-8. **Extrapoler une tendance depuis un seul échantillon d'une série
+8. **Croire un instrument qui déclare en échec une fonction qu'on voit marcher.**
+   `piste-audio.mjs` a annoncé trois fois « entrée de menu introuvable » sur
+   Avatar. J'en ai déduit une régression, cherché du côté du magasin audio et du
+   transport HEVC, et proposé d'annuler un changement sain. L'utilisateur a
+   changé de langue à la main, dans Chrome : **instantané**.
+
+   La cause tenait à un caractère. L'interface marque la piste ACTIVE d'une
+   coche collée au libellé — le bouton s'appelle `✓Anglais (VO) 5.1` — et
+   l'instrument cherchait l'égalité exacte avec le nom du manifeste. D'où une
+   intermittence parfaitement trompeuse : le premier essai bascule sur
+   l'anglais, qui reste sélectionné, et **tous les suivants échouent sur le même
+   fichier**. « Ça marchait il y a une heure » était vrai, et c'est ce qui rendait
+   le faux diagnostic crédible.
+
+   Deux autres défauts du même script, trouvés en le réparant : il cherchait
+   l'entrée **300 ms après** avoir ouvert le menu, au lieu d'attendre qu'elle
+   existe ; et un second clic sur « Réglages », posé pour lire les libellés,
+   **refermait** le menu — le bouton bascule.
+
+   > **La règle : un instrument qui contredit une observation directe se vérifie
+   > AVANT le produit.** Trente secondes à la main auraient économisé une heure.
+
+   Deux corollaires appliqués depuis : un échec doit dire **ce qu'il a vu**, pas
+   seulement ce qu'il cherchait — la liste des boutons présents a tranché en dix
+   secondes ce que « introuvable » avait rendu opaque ; et chaque exécution
+   vérifie que l'instrument **sait refuser**, en cherchant une piste qui n'existe
+   pas. Un instrument qui n'a jamais rien refusé ne vaut rien.
+
+9. **Extrapoler une tendance depuis un seul échantillon d'une série
    périodique.** Dix segments consécutifs montraient un écart croissant de
    +4 ms chacun ; j'en ai déduit une dérive linéaire de 600 ms après dix
    minutes. Mesurés sur vingt-cinq segments, les écarts **retombent à zéro tous

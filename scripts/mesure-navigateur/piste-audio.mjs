@@ -43,14 +43,77 @@ const PIEGE = `(() => {
    * piloter par ses internes ne mesurerait pas ce que fait un spectateur. On
    * clique donc dans l'interface, comme lui.
    */
-  window.__clic = (texte) => {
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * LA COCHE DE SÉLECTION FAIT PARTIE DU LIBELLÉ. C'ÉTAIT TOUT LE DÉFAUT.
+   *
+   * L'interface marque la piste ACTIVE d'un « ✓ » collé au texte : le bouton
+   * s'appelle « ✓Anglais (VO) 5.1 » dès qu'elle est choisie. L'instrument
+   * cherchait l'égalité exacte avec le nom du manifeste et ne trouvait rien.
+   *
+   * D'où une intermittence parfaitement trompeuse : le premier essai bascule sur
+   * l'anglais, qui reste sélectionné, et TOUS les essais suivants échouent sur le
+   * même fichier. Une heure de soupçons sur le magasin audio et le transport
+   * HEVC, pour une coche.
+   *
+   * On compare donc sur un libellé NORMALISÉ, débarrassé du marqueur d'état.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  window.__normaliser = (texte) => (texte ?? '').replace(/^[✓✔]\s*/, '').trim();
+
+  window.__libelles = () =>
+    [...document.querySelectorAll('button')]
+      .map((b) => (b.textContent ?? '').trim())
+      .filter((t) => t !== '');
+
+  /** Cette piste est-elle CELLE qui est déjà active ? */
+  window.__estActive = (texte) =>
+    window.__libelles().some((l) => /^[✓✔]/.test(l) && window.__normaliser(l) === texte);
+
+  window.__trouver = (texte) => {
     const boutons = [...document.querySelectorAll('button')];
-    const cible = boutons.find((b) => (b.textContent ?? '').trim() === texte)
-      ?? boutons.find((b) => (b.getAttribute('aria-label') ?? '') === texte);
+    return (
+      boutons.find((b) => window.__normaliser(b.textContent) === texte)
+      ?? boutons.find((b) => window.__normaliser(b.getAttribute('aria-label')) === texte)
+      ?? null
+    );
+  };
+
+  window.__clic = (texte) => {
+    const cible = window.__trouver(texte);
     if (!cible) return false;
     cible.click();
     return true;
   };
+
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ATTENDRE QUE L'ENTRÉE EXISTE, PLUTÔT QUE DE CHERCHER À UN INSTANT FIXE.
+   *
+   * L'instrument ouvrait le menu, patientait 300 ms, puis cherchait la piste. Il
+   * a déclaré « entrée de menu introuvable » trois fois de suite sur un fichier
+   * où l'utilisateur, à la main, changeait de langue sans la moindre latence.
+   *
+   * Le menu est peuplé par React à partir des rendus que hls.js publie, et cette
+   * publication n'a pas d'horaire : elle dépend de l'état du lecteur. 300 ms
+   * suffisaient souvent — le même instrument avait réussi une heure plus tôt sur
+   * le même fichier — et c'est précisément ce qui rend un délai fixe pire qu'une
+   * absence de contrôle : il marche assez pour qu'on lui fasse confiance.
+   *
+   * On attend donc que l'entrée SOIT LÀ, avec une borne. Le délai mesuré ensuite
+   * ne compte qu'à partir du clic, il n'est pas faussé par cette attente.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  window.__attendre = (texte, delaiMax) =>
+    new Promise((resolve) => {
+      const limite = performance.now() + delaiMax;
+      const voir = () => {
+        if (window.__trouver(texte) !== null) return resolve(true);
+        if (performance.now() > limite) return resolve(false);
+        setTimeout(voir, 25);
+      };
+      voir();
+    });
   // Les commandes se cachent seules : il faut les réveiller avant de cliquer.
   window.__reveiller = () => {
     for (const nom of ['mousemove', 'pointermove']) {
@@ -128,13 +191,62 @@ try {
     let echecs = 0;
     for (let n = 1; n < Math.min(noms.length, 4); n += 1) {
       const avant = await cdp.evaluer(ETAT);
-      await cdp.evaluer('window.__reveiller()');
-      await new Promise((r) => setTimeout(r, 300));
-      await cdp.evaluer('window.__clic("Réglages")');
-      await new Promise((r) => setTimeout(r, 300));
 
+      /*
+       * On vise une piste qui n est PAS déjà active : basculer vers celle qu on
+       * écoute ne mesurerait rien — hls.js n aurait rien à changer et le tampon
+       * couvrirait déjà la position. Le choix se fait à chaque tour, puisque le
+       * tour précédent a changé la piste active.
+       */
+      /*
+       * Trois attentes BORNÉES, jamais un délai fixe : les commandes doivent
+       * apparaître, le menu doit s'ouvrir, puis l'entrée doit être peuplée. Un
+       * échec à l'une des trois est un vrai échec, et il dit laquelle.
+       *
+       * UN SEUL clic sur « Réglages » : il BASCULE le menu. Un second, posé pour
+       * lire les libellés avant de choisir, le refermait — et l'instrument
+       * annonçait « boutons présents : ["10","10"] », c'est-à-dire un menu clos.
+       */
+      await cdp.evaluer('window.__reveiller()');
+      if ((await cdp.evaluer('window.__attendre("Réglages", 5000)')) !== true) {
+        console.log(`  ${String(n).padStart(2)} (le bouton « Réglages » n’apparaît pas)`);
+        echecs += 1;
+        continue;
+      }
+
+      await cdp.evaluer('window.__clic("Réglages")');
+
+      /*
+       * Le menu ouvert, on choisit une piste qui n'est PAS déjà active : basculer
+       * vers celle qu'on écoute ne mesurerait rien — hls.js n'aurait rien à
+       * changer et le tampon couvrirait déjà la position. Le choix se refait à
+       * chaque tour, puisque le tour précédent a changé la piste active.
+       */
+      await cdp.evaluer(`window.__attendre(${JSON.stringify(noms[0])}, 5000)`);
+      const cible = (await cdp.evaluer(
+        `(() => { const actifs = window.__libelles().filter((l) => /^[✓✔]/.test(l)).map(window.__normaliser);
+                  return ${JSON.stringify(noms)}.find((n) => !actifs.includes(n)) ?? null; })()`,
+      )) ?? noms[n];
+
+      const presente = await cdp.evaluer(`window.__attendre(${JSON.stringify(cible)}, 5000)`);
+      if (presente !== true) {
+        /*
+         * Un échec doit dire ce qu'il a VU, pas seulement ce qu'il cherchait.
+         * « Introuvable » a fait soupçonner le lecteur pendant une heure ; la
+         * liste des boutons présents aurait tranché en dix secondes.
+         */
+        const vus = await cdp.evaluer(
+          `[...document.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim()).filter((t) => t !== '')`,
+        );
+        console.log(`  ${String(n).padStart(2)} (le menu s’ouvre mais « ${cible} » n’y est pas)`);
+        console.log(`        boutons présents : ${JSON.stringify(vus)}`);
+        echecs += 1;
+        continue;
+      }
+
+      // Le chronomètre ne part qu ICI : l attente ci-dessus ne le fausse pas.
       const t0 = Date.now();
-      const clique = await cdp.evaluer(`window.__clic(${JSON.stringify(noms[n])})`);
+      const clique = await cdp.evaluer(`window.__clic(${JSON.stringify(cible)})`);
       if (clique !== true) {
         console.log(`  ${String(n).padStart(2)} ${(noms[n] ?? '?').slice(0, 18).padEnd(20)}  (entrée de menu introuvable)`);
         echecs += 1;
@@ -156,7 +268,7 @@ try {
       const bon = delai !== null;
       if (!bon) echecs += 1;
       console.log(
-        `  ${String(n).padStart(2)} ${(noms[n] ?? "?").slice(0, 18).padEnd(20)} ` +
+        `  ${String(n).padStart(2)} ${(cible ?? "?").slice(0, 18).padEnd(20)} ` +
           `${(delai === null ? 'jamais' : `${delai} ms`).padStart(8)}   ` +
           `${String(etat?.t ?? '?').padStart(8)}   ` +
           `${(etat?.couvre ? 'présent' : 'ABSENT').padEnd(12)}  ${bon ? '' : '← ÉCHEC'}`,
@@ -165,6 +277,34 @@ try {
       await new Promise((r) => setTimeout(r, 3000));
     }
     console.log(`\n  ${Math.min(noms.length, 4) - 1 - echecs} changement(s) réussi(s) sur ${Math.min(noms.length, 4) - 1}.`);
+
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * L'INSTRUMENT SAIT-IL DIRE NON ? — contrôle à chaque exécution.
+     *
+     * Il vient de déclarer trois fois un échec là où la fonction marchait, et
+     * cela a failli faire annuler un changement sain. La correction — attendre
+     * que l'entrée existe au lieu de chercher après 300 ms — pourrait tout aussi
+     * bien avoir rendu l'instrument incapable de refuser quoi que ce soit : une
+     * attente bornée qui rendrait toujours vrai passerait inaperçue.
+     *
+     * On lui fait donc chercher une piste qui ne peut pas exister. S'il la
+     * trouve, c'est lui qu'il faut corriger, pas le lecteur — et le reste de ses
+     * verdicts ne vaut rien.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    const FANTOME = 'Klingon 7.1 (piste inexistante)';
+    await cdp.evaluer('window.__reveiller()');
+    await cdp.evaluer('window.__clic("Réglages")');
+    const trouveFantome = await cdp.evaluer(`window.__attendre(${JSON.stringify(FANTOME)}, 3000)`);
+
+    console.log('');
+    console.log(`  contrôle — recherche de « ${FANTOME} » : ${trouveFantome === true ? 'TROUVÉE' : 'refusée'}`);
+    console.log(
+      trouveFantome === true
+        ? '  → L’INSTRUMENT NE SAIT PAS REFUSER. Ses verdicts ci-dessus ne valent rien.'
+        : '  → Il sait refuser : ses verdicts ci-dessus ont une valeur.',
+    );
   }
 } finally {
   chrome.kill();
