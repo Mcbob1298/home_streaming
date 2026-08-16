@@ -19,6 +19,7 @@ import { registerProgressRoutes } from './api/progress.js';
 import { registerReviewRoutes } from './api/review.js';
 import { registerRoutes } from './api/routes.js';
 import { registerStreamRoutes } from './api/stream.js';
+import { registerVersionRoute } from './api/version.js';
 import { ImageDownloader } from './metadata/images.js';
 import { TmdbClient } from './metadata/tmdb.js';
 import type { EnrichContext } from './metadata/enrich.js';
@@ -70,6 +71,8 @@ async function main(): Promise<void> {
 
   const subtitleCacheDir = SUBTITLE_CACHE_DIR;
 
+  // En premier : c'est la route qu'on interroge quand plus rien n'a de sens.
+  registerVersionRoute(app);
   registerRoutes(app, db);
   registerProgressRoutes(app, db);
   registerPreparationRoutes(app, db);

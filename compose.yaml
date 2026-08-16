@@ -26,6 +26,12 @@ services:
       # une image sans interface ni serveur compilé.
       # ------------------------------------------------------------------------
       target: runtime
+      # Ce que l'image exécutera, inscrit dedans à la construction. Voir le
+      # Dockerfile et `GET /api/version`. Absents, ils valent « inconnu » —
+      # ce qui est une réponse honnête, contrairement à une valeur devinée.
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-inconnu}
+        BUILD_DATE: ${BUILD_DATE:-inconnu}
     image: home-streaming:latest
     container_name: home-streaming
     restart: unless-stopped

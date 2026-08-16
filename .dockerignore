@@ -17,7 +17,13 @@ data
 config.json
 
 # Produits de compilation locaux : l'image reconstruit les siens.
+#
+# Le cache incrémental de tsc est exclu AVEC le dist, et pas seulement par
+# précaution : un dist périmé entrant dans le contexte accompagné d'un
+# .tsbuildinfo à jour ferait conclure à tsc qu'il n'a rien à recompiler. La
+# construction réussirait, et l'image servirait l'ancien code sans une erreur.
 server/dist
+**/*.tsbuildinfo
 
 # Outillage, historique et notes.
 .git

@@ -145,6 +145,27 @@ COPY --from=build /app/server/package.json ./server/package.json
 COPY --from=web /app/web/dist ./web/dist
 COPY package.json ./package.json
 
+# ------------------------------------------------------------------------------
+# QUEL CODE CETTE IMAGE CONTIENT — inscrit dedans, pas déduit à l'exécution.
+#
+# Le NAS n'a pas git et l'image ne contient pas `.git` : rien, à l'intérieur du
+# conteneur, ne peut répondre à cette question autrement. Une valeur lue dans un
+# fichier monté décrirait le dépôt de l'HÔTE, qui n'est pas ce que l'image
+# exécute — et cette confusion est exactement le défaut qu'on cherche à voir.
+#
+# Ces deux ARG sont posés DANS l'étage d'exécution : un ARG ne traverse pas les
+# étages, et les déclarer plus haut ne les rendrait pas visibles ici.
+#
+#   GIT_COMMIT=$(git rev-parse HEAD) BUILD_DATE=$(date -Is) \
+#     docker compose up -d --build
+#
+# Sans eux, la route répond « inconnu » — jamais une valeur inventée.
+# ------------------------------------------------------------------------------
+ARG GIT_COMMIT=inconnu
+ARG BUILD_DATE=inconnu
+ENV GIT_COMMIT=$GIT_COMMIT \
+    BUILD_DATE=$BUILD_DATE
+
 ENV NODE_ENV=production
 
 CMD ["node", "server/dist/index.js"]
