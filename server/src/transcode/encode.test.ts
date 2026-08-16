@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  HDR_PASSTHROUGH_BITRATE,
   TARGET_HEIGHT,
   bitrateFor,
   buildTranscodeArgs,
@@ -70,22 +69,52 @@ describe('bitrateFor', () => {
 describe('outputGeometry', () => {
   const vaapi = { hardware: 'vaapi' as const };
 
-  it('garde le HDR mais RÉDUIT à 1080p, comme le reste', () => {
-    /*
-     * Il ne réduisait pas, au nom du « ne rien perdre ». La marge de tampon
-     * après un déplacement l'a contredit : moins de 5 s en 4K contre des
-     * dizaines de secondes en 1080p, parce que l'encodeur tient ~1,7× le temps
-     * réel au lieu de ~5×. Ce qui compte — 10 bits, PQ, BT.2020 — est dans le
-     * CODEC et les métadonnées, pas dans le nombre de pixels.
-     */
-    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true });
-    expect(g.passthrough).toBe(true);
-    expect(g).toMatchObject({ width: 1920, height: 1080, bitrate: HDR_PASSTHROUGH_BITRATE });
+  it('suit la source jusqu’au plafond du transport HDR', () => {
+    // Une source 4K est lue en 4K, et son débit tombe de la même règle que le
+    // reste : `bitrateFor(2160)` vaut les 12 Mbps validés à la mesure.
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true, hdrMaxHeight: 2160 });
+    expect(g).toEqual({ passthrough: true, width: 3840, height: 2160, bitrate: bitrateFor(2160) });
   });
 
-  it('n’agrandit pas une source HDR déjà sous 1080p', () => {
-    const g = outputGeometry({ sourceWidth: 1280, sourceHeight: 720, ...vaapi, hdrPassthrough: true });
-    expect(g).toMatchObject({ width: 1280, height: 720 });
+  /*
+   * LE PREMIER GARDE-FOU : ON NE MONTE JAMAIS.
+   *
+   * Il ne dépend d'aucun réglage — c'est le `Math.min` d'`outputHeight` — et
+   * aucune valeur de plafond ne peut le contourner. Un plafond absurde est donc
+   * sans effet sur une source modeste, plutôt que d'agrandir.
+   */
+  it('n’agrandit JAMAIS, quel que soit le plafond', () => {
+    for (const plafond of [1080, 2160, 4320]) {
+      const g = outputGeometry({
+        sourceWidth: 1280,
+        sourceHeight: 720,
+        ...vaapi,
+        hdrPassthrough: true,
+        hdrMaxHeight: plafond,
+      });
+      expect(g, `plafond ${plafond}`).toMatchObject({ width: 1280, height: 720, bitrate: bitrateFor(720) });
+    }
+  });
+
+  /* LE SECOND : le plafond se redescend, et ramène tout avec lui. */
+  it('redescend en 1080p quand le plafond le demande', () => {
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true, hdrMaxHeight: 1080 });
+    expect(g).toEqual({ passthrough: true, width: 1920, height: 1080, bitrate: bitrateFor(1080) });
+  });
+
+  /*
+   * Sans plafond explicite, on décrit le chemin ORDINAIRE. Ce défaut évite
+   * qu'un appelant distrait produise de la 4K sans l'avoir demandé.
+   */
+  it('retombe sur le plafond ordinaire quand aucun n’est donné', () => {
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true });
+    expect(g).toMatchObject({ width: 1920, height: 1080 });
+  });
+
+  it('ne laisse PAS le plafond HDR déborder sur le chemin ordinaire', () => {
+    // Un 4K SDR reste normalisé en 1080p même si le transport HDR vise 2160.
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrMaxHeight: 2160 });
+    expect(g).toMatchObject({ passthrough: false, width: 1920, height: 1080 });
   });
 
   it('réduit à 1080p et à son débit sans le transport HDR', () => {
@@ -109,8 +138,8 @@ describe('outputGeometry', () => {
    * divergé. Ces deux tests fixent l'accord plutôt que les valeurs.
    */
   it('donne au manifeste EXACTEMENT ce que l’encodeur produit — transport HDR', () => {
-    const args = buildTranscodeArgs(options({ sourceWidth: 3840, sourceHeight: 2160, hdrPassthrough: true }));
-    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true });
+    const args = buildTranscodeArgs(options({ sourceWidth: 3840, sourceHeight: 2160, hdrPassthrough: true, hdrMaxHeight: 2160 }));
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true, hdrMaxHeight: 2160 });
 
     expect(args[args.indexOf('-b:v') + 1]).toBe(String(g.bitrate));
     expect(args.join(' ')).toContain(`scale_vaapi=w=${g.width}:h=${g.height}:format=p010`);

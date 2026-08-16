@@ -116,6 +116,7 @@ export function preludeSignature(input: SessionInput, options: SessionOptions): 
     hardware: options.hardware,
     mode: input.mode,
     hdrPassthrough: input.hdrPassthrough === true,
+    hdrMaxHeight: options.hdrMaxHeight,
   });
 
   const matiere = JSON.stringify({

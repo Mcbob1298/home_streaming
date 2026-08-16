@@ -121,9 +121,17 @@ export interface TranscodeRunOptions {
    * Voir `hdrPassthroughArgs` pour ce que cela change et pourquoi.
    */
   hdrPassthrough?: boolean;
+  /** Plafond du transport HDR. Voir `config.transcode.hdrMaxHeight`. */
+  hdrMaxHeight?: number;
 }
 
-/** Hauteur maximale produite. Au-delà, le NAS travaille pour rien. */
+/**
+ * Plafond du chemin ORDINAIRE — le réencodage en H.264 pour un navigateur.
+ *
+ * Le transport HDR a le sien, plus haut et configurable : voir
+ * `config.transcode.hdrMaxHeight`. Les deux ne visent pas la même chose, l'un
+ * normalise et l'autre préserve.
+ */
 export const TARGET_HEIGHT = 1080;
 
 /**
@@ -140,10 +148,17 @@ export function bitrateFor(height: number): number {
   return 1_500_000;
 }
 
-/** Hauteur de sortie : celle de la cible, ou celle de la source si plus petite. */
-export function outputHeight(sourceHeight: number | null): number {
-  if (sourceHeight === null || sourceHeight <= 0) return TARGET_HEIGHT;
-  return Math.min(TARGET_HEIGHT, sourceHeight);
+/**
+ * Hauteur de sortie : le plafond, ou celle de la source si plus petite.
+ *
+ * Le plafond est paramétrable parce que le transport HDR a le sien —
+ * `config.transcode.hdrMaxHeight` — plus haut que celui du chemin ordinaire.
+ * Le `Math.min` est la règle « on ne monte JAMAIS » : elle ne dépend d'aucun
+ * réglage, et aucune valeur de plafond ne peut la contourner.
+ */
+export function outputHeight(sourceHeight: number | null, plafond: number = TARGET_HEIGHT): number {
+  if (sourceHeight === null || sourceHeight <= 0) return plafond;
+  return Math.min(plafond, sourceHeight);
 }
 
 /**
@@ -172,26 +187,29 @@ export function outputHeight(sourceHeight: number | null): number {
  *     une session au lieu de deux. Accepté : 164 fichiers sur 2796 sont HDR.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * ON REDIMENSIONNE, ET C'EST UN REVIREMENT MESURÉ.
+ * LA DÉFINITION SUIT LA SOURCE, JUSQU'À UN PLAFOND CONFIGURABLE.
  *
- * Ce paragraphe disait l'inverse : « réduire un HDR n'aurait aucun sens quand
- * l'intention est de ne rien perdre ». L'argument était esthétique, la mesure a
- * tranché autrement — et pas sur le débit, sur la VITESSE D'ENCODAGE.
+ * Une source 4K est lue en 4K : c'est pour cela qu'elle est en 4K. Le plafond
+ * vit dans `config.transcode.hdrMaxHeight` — 2160 par défaut — et non dans une
+ * constante, précisément parce que ce choix a un coût qu'on peut vouloir défaire
+ * sans recompiler.
  *
- * En 4K le transcodeur tient ~1,7× le temps réel. La marge de tampon après un
- * déplacement croît donc lentement : moins de 5 s dix secondes après le saut,
- * contre +57 à +87 s sur le chemin 1080p qui encode à ~5×. Mesuré aux attentes
- * de 10, 20 et 35 s pour vérifier que c'était bien une croissance et non un
- * plafond.
+ * CE QU'IL COÛTE, mesuré dos à dos sur la même liaison : la marge de tampon dix
+ * secondes après un déplacement passe de +10,9/+18,5 s (1080p) à +1,8/+6,3 s
+ * (4K). Le transcodeur tient ~1,7× le temps réel en 4K contre ~5× en 1080p, et
+ * c'est cela — pas le débit, pas le réseau — qui borne la marge.
  *
- * Réduire coûte des pixels — sur un écran qui en fait 1920×1080. Cela garde ce
- * qui était le but : HEVC 10 bits, courbe PQ, primaires BT.2020. Le HDR voyage
- * intact, simplement à la définition de l'écran.
+ * CE QU'IL NE COÛTE PAS : la marge n'est pas un plafond mais un TRANSITOIRE. Elle
+ * croît d'environ 0,7 s par seconde de lecture — vérifié aux attentes de 10, 20
+ * et 35 s, soit trois points, pour distinguer une croissance d'une constante. En
+ * regardant normalement, le coussin se constitue. Le seul cas qui coûte est le
+ * second saut rapproché, où l'on repart d'une marge quasi nulle.
+ *
+ * Le débit, lui, suit la résolution par `bitrateFor` : plus de constante dédiée
+ * à tenir à jour, et 12 Mbps en 4K tombe de la même règle que le reste.
  * ─────────────────────────────────────────────────────────────────────────────
  * ═════════════════════════════════════════════════════════════════════════════
  */
-/** Débit du transport HDR. Celui de Plex, le temps que la règle le remplace. */
-export const HDR_PASSTHROUGH_BITRATE = 12_000_000;
 
 export function hdrPassthroughArgs(width: number | null, height: number | null): string[] {
   /*
@@ -265,6 +283,14 @@ export function outputGeometry(options: {
   mode?: 'remux' | 'transcode';
   /** Débit de la source, pour le remux. Celui du fichier, faute de mieux. */
   sourceBitrate?: number | null;
+  /**
+   * Plafond du TRANSPORT HDR, en pixels de hauteur. `config.transcode.hdrMaxHeight`.
+   *
+   * Absent = `TARGET_HEIGHT`, le plafond du chemin ordinaire. Ce défaut fait que
+   * les tests et les appelants qui n'ont pas de configuration à portée décrivent
+   * le chemin ordinaire, jamais un 4K par inadvertance.
+   */
+  hdrMaxHeight?: number;
 }): OutputGeometry {
   if (options.mode === 'remux') {
     return {
@@ -287,32 +313,38 @@ export function outputGeometry(options: {
 
   /*
    * ───────────────────────────────────────────────────────────────────────────
-   * LE TRANSPORT HDR PASSE PAR `outputHeight` COMME LE RESTE.
+   * DEUX PLAFONDS, UNE SEULE RÈGLE : ON NE MONTE JAMAIS.
    *
-   * Il ne redimensionnait pas : « réduire un HDR n'aurait aucun sens quand
-   * l'intention est de ne rien perdre ». L'intention était juste, la mesure l'a
-   * corrigée — et ce n'est PAS le débit qui a tranché, c'est la vitesse
-   * d'encodage.
+   * Le chemin ordinaire NORMALISE vers ce que tout navigateur décode, et reste
+   * à `TARGET_HEIGHT`. Le transport HDR PRÉSERVE une source dont on a décidé
+   * qu'elle valait d'être vue telle quelle, et monte jusqu'à `hdrMaxHeight` —
+   * 2160 par défaut, donc une source 4K lue en 4K.
    *
-   * En 4K le transcodeur tourne à ~1,7× le temps réel. La marge de tampon après
-   * un déplacement croît donc de ~0,7 s par seconde de lecture, et vaut encore
-   * moins de 5 s dix secondes après le saut — contre +57 à +87 s sur le chemin
-   * 1080p, qui encode à ~5×. Mesuré aux trois attentes 10, 20 et 35 s.
+   * Dans les deux cas c'est `outputHeight` qui tranche, et elle prend le MINIMUM
+   * avec la hauteur de la source : un fichier 1080p reste en 1080p quel que soit
+   * le plafond, et aucun réglage ne peut faire agrandir quoi que ce soit.
    *
-   * Ce qui est perdu en réduisant : des pixels. Ce qui est gardé, et qui était
-   * le but : le HEVC 10 bits, la courbe PQ et les primaires BT.2020 — vérifiés
-   * dans l'en-tête produit. Le HDR voyage intact, simplement en 1920×1080, sur
-   * un écran qui en fait 1920×1080.
+   * CE QUE COÛTE LE PLAFOND HAUT, mesuré dos à dos sur la même liaison : la
+   * marge de tampon dix secondes après un déplacement tombe de +10,9/+18,5 s à
+   * +1,8/+6,3 s. Elle n'est pas plafonnée pour autant — elle croît d'environ
+   * 0,7 s par seconde de lecture, donc le coussin se constitue en regardant
+   * normalement. Le cas qui coûte est le second saut rapproché, et c'est un
+   * choix assumé : `hdrMaxHeight` existe pour le défaire.
+   *
+   * LE DÉBIT SUIT LA RÉSOLUTION, il n'est plus une constante. `bitrateFor` rend
+   * 12 Mbps au-dessus de 1080p et 6 Mbps en dessous — soit exactement les
+   * 12 Mbps validés en 4K, sans qu'une deuxième valeur ait à être tenue à jour.
    * ───────────────────────────────────────────────────────────────────────────
    */
-  const height = outputHeight(options.sourceHeight);
+  const plafond = passthrough ? (options.hdrMaxHeight ?? TARGET_HEIGHT) : TARGET_HEIGHT;
+  const height = outputHeight(options.sourceHeight, plafond);
   const size = outputSize(options.sourceWidth, options.sourceHeight, height);
 
   return {
     passthrough,
     width: size?.width ?? null,
     height: size?.height ?? height,
-    bitrate: passthrough ? HDR_PASSTHROUGH_BITRATE : bitrateFor(height),
+    bitrate: bitrateFor(height),
   };
 }
 
@@ -628,6 +660,7 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
     sourceHeight: options.sourceHeight,
     hardware: options.hardware,
     hdrPassthrough: options.hdrPassthrough,
+    hdrMaxHeight: options.hdrMaxHeight,
   });
   const passthrough = sortie.passthrough;
   const height = sortie.height;

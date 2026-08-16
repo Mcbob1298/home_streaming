@@ -11,7 +11,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { HDR_PASSTHROUGH_BITRATE, outputGeometry } from './encode.js';
+import { bitrateFor, outputGeometry } from './encode.js';
 import { planAudioSegments, planSegments } from './segments.js';
 import {
   PRELUDE_SECONDS,
@@ -169,8 +169,8 @@ describe('preludeSignature — elle change dès que les octets changeraient', ()
      * Toutes les entrées de `outputGeometry` — dimensions de la source,
      * accélération, mode, transport HDR — sont DÉJÀ des clés de l'empreinte.
      * Aucun jeu d'entrées ne peut donc isoler la géométrie : sa vraie valeur
-     * est de réagir aux CONSTANTES, `HDR_PASSTHROUGH_BITRATE` en tête, qu'un
-     * test ne peut pas faire varier.
+     * est de réagir aux CONSTANTES — le plafond par défaut, l'échelle de
+     * `bitrateFor` — qu'un test ne peut pas faire varier.
      *
      * D'où la valeur figée. Elle échoue dès que les octets produits
      * changeraient — ce qui est exactement le rôle du garde-fou. La faire
@@ -184,9 +184,11 @@ describe('preludeSignature — elle change dès que les octets changeraient', ()
       hardware: 'vaapi',
       mode: 'transcode',
       hdrPassthrough: true,
-    })).toEqual({ passthrough: true, width: 1920, height: 1080, bitrate: HDR_PASSTHROUGH_BITRATE });
+      hdrMaxHeight: 2160,
+    })).toEqual({ passthrough: true, width: 3840, height: 2160, bitrate: 12_000_000 });
 
-    expect(HDR_PASSTHROUGH_BITRATE).toBe(12_000_000);
+    // Le débit VIENT de la résolution : ces deux-là ne doivent jamais diverger.
+    expect(bitrateFor(2160)).toBe(12_000_000);
   });
 
   it('change si une piste audio est ajoutée', () => {

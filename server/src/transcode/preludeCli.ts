@@ -147,6 +147,7 @@ async function main(): Promise<void> {
     hardware: backend.backend,
     device: capabilities.device ?? '/dev/dri/renderD128',
     toneMap: capabilities.toneMap,
+    hdrMaxHeight: config.transcode.hdrMaxHeight,
     onLog: (message, details) => console.log(`  ${message}`, details ?? ''),
   };
 

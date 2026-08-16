@@ -10,6 +10,9 @@
     "maxSessions": 4,
     "idleSeconds": 60,
 
+    "//hdrMaxHeight": "Hauteur maximale du transport HDR intact. 2160 = une source 4K est lue en 4K. La descendre a 1080 multiplie par quatre la marge de tampon apres un deplacement, au prix des pixels.",
+    "hdrMaxHeight": 2160,
+
     "//hevcClientFiles": "Périmètre du transport HDR intact, provisoire : à remplacer par la négociation des capacités du client, pas à étendre fichier par fichier. Voir server/src/config.ts.",
     "hevcClientFiles": [365]
   },

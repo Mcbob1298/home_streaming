@@ -184,6 +184,7 @@ async function main(): Promise<void> {
       hardware: backend.backend,
       device: capabilities.device ?? '/dev/dri/renderD128',
       toneMap: capabilities.toneMap,
+      hdrMaxHeight: config.transcode.hdrMaxHeight,
       onLog: (message, details) => app.log.info(details ?? {}, message),
     });
     await sessionManager.start();

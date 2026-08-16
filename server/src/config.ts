@@ -51,6 +51,28 @@ export interface TranscodeConfig {
    * ═══════════════════════════════════════════════════════════════════════════
    */
   hevcClientFiles: number[];
+  /**
+   * Hauteur maximale produite par le TRANSPORT HDR INTACT.
+   *
+   * ═══════════════════════════════════════════════════════════════════════════
+   * ELLE NE GOUVERNE QUE CE CHEMIN-LÀ, ET C'EST DÉLIBÉRÉ.
+   *
+   * Le chemin ordinaire — réencodage en H.264 pour un navigateur — garde son
+   * plafond à `TARGET_HEIGHT`, 1080p. Les deux ne poursuivent pas le même but :
+   * l'un NORMALISE vers ce que tout navigateur décode, l'autre PRÉSERVE une
+   * source dont on a décidé qu'elle valait d'être vue telle quelle.
+   *
+   * 2160 par défaut : une source 4K est lue en 4K. La règle « on ne monte
+   * jamais » vient de `outputHeight`, qui prend le minimum avec la source — un
+   * fichier 1080p reste en 1080p quelle que soit cette valeur.
+   *
+   * La descendre à 1080 ramène le transport HDR à la définition de l'écran, ce
+   * qui multiplie par quatre la marge de tampon après un déplacement (mesuré :
+   * +1,8 à +6,3 s en 4K contre +10,9 à +18,5 s en 1080p, même liaison, dos à
+   * dos). C'est le levier à actionner si l'usage donne tort à la 4K.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  hdrMaxHeight: number;
 }
 
 export interface AppConfig {
@@ -75,6 +97,8 @@ const DEFAULT_TRANSCODE: TranscodeConfig = {
   idleSeconds: 60,
   // Vide par défaut : sans mention explicite, aucun fichier ne change de chemin.
   hevcClientFiles: [],
+  // 4K : une source 4K est lue en 4K. « On ne monte jamais » vient d'outputHeight.
+  hdrMaxHeight: 2160,
 };
 
 /**
@@ -232,7 +256,7 @@ function validateTranscode(raw: unknown): TranscodeConfig {
   if (typeof raw !== 'object') fail('config.json : "transcode" doit être un objet.');
 
   const section = raw as Record<string, unknown>;
-  const { workDir, maxSessions, idleSeconds, hevcClientFiles } = section;
+  const { workDir, maxSessions, idleSeconds, hevcClientFiles, hdrMaxHeight } = section;
 
   if (
     hevcClientFiles !== undefined &&
@@ -240,6 +264,18 @@ function validateTranscode(raw: unknown): TranscodeConfig {
       !hevcClientFiles.every((v) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0))
   ) {
     fail('config.json : "transcode.hevcClientFiles" doit être une liste d’identifiants entiers.');
+  }
+
+  /*
+   * Bornes larges, mais bornes quand même : une valeur négative ou fantaisiste
+   * produirait une chaîne `scale_vaapi` que ffmpeg refuse, et l'échec
+   * apparaîtrait à la première lecture plutôt qu'au démarrage.
+   */
+  if (
+    hdrMaxHeight !== undefined &&
+    (typeof hdrMaxHeight !== 'number' || !Number.isFinite(hdrMaxHeight) || hdrMaxHeight < 240 || hdrMaxHeight > 4320)
+  ) {
+    fail('config.json : "transcode.hdrMaxHeight" doit être une hauteur en pixels entre 240 et 4320.');
   }
 
   if (workDir !== undefined && (typeof workDir !== 'string' || workDir.trim() === '')) {
@@ -259,6 +295,7 @@ function validateTranscode(raw: unknown): TranscodeConfig {
     hevcClientFiles: Array.isArray(hevcClientFiles)
       ? (hevcClientFiles as number[])
       : DEFAULT_TRANSCODE.hevcClientFiles,
+    hdrMaxHeight: typeof hdrMaxHeight === 'number' ? Math.floor(hdrMaxHeight) : DEFAULT_TRANSCODE.hdrMaxHeight,
   };
 }
 

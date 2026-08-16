@@ -106,6 +106,8 @@ export interface SessionOptions {
   device: string;
   /** Moteur de tone mapping retenu au démarrage, après essai réel. */
   toneMap: ToneMapBackend | null;
+  /** Plafond du transport HDR, en pixels de hauteur. config.transcode.hdrMaxHeight. */
+  hdrMaxHeight: number;
   onLog: (message: string, details?: Record<string, unknown>) => void;
 }
 
@@ -683,6 +685,7 @@ export class TranscodeSession {
           device: this.options.device,
           toneMap: this.options.toneMap,
           hdrPassthrough: this.input.hdrPassthrough === true,
+          hdrMaxHeight: this.options.hdrMaxHeight,
         })
       : buildRemuxArgs(common);
   }

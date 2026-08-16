@@ -34,6 +34,7 @@ export interface ManagerOptions {
   hardware: SessionOptions['hardware'];
   device: string;
   toneMap: SessionOptions['toneMap'];
+  hdrMaxHeight: SessionOptions['hdrMaxHeight'];
   onLog: SessionOptions['onLog'];
 }
 
@@ -63,6 +64,11 @@ export class SessionManager {
    */
   get hardware(): SessionOptions['hardware'] {
     return this.options.hardware;
+  }
+
+  /** Plafond du transport HDR, dont le manifeste a besoin comme l'encodeur. */
+  get hdrMaxHeight(): number {
+    return this.options.hdrMaxHeight;
   }
 
   /**
@@ -124,6 +130,7 @@ export class SessionManager {
       hardware: this.options.hardware,
       device: this.options.device,
       toneMap: this.options.toneMap,
+      hdrMaxHeight: this.options.hdrMaxHeight,
       onLog: this.options.onLog,
     };
 

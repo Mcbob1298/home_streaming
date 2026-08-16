@@ -325,6 +325,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       sourceWidth: resolved.source.width,
       sourceHeight: resolved.source.height,
       hardware: manager.hardware,
+      hdrMaxHeight: manager.hdrMaxHeight,
       mode,
       sourceBitrate: media.bitrate,
       hdrPassthrough: hdrPassthroughFor(loadConfig(), {
