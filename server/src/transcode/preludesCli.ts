@@ -29,7 +29,7 @@ import { DATA_DIR, loadConfig, loadEnvFile, PRELUDE_DIR, resolveDatabasePath } f
 import { openDatabase } from '../db/index.js';
 import { detectCapabilities } from './capabilities.js';
 import { supportedBackend } from './encode.js';
-import { fabriquerPrelude, type ResultatPrelude } from './preludeCli.js';
+import { fabriquerPrelude, type ResultatPrelude } from './fabriquePrelude.js';
 
 function lireListe(argv: string[]): number[] | null {
   const index = argv.indexOf('--files');

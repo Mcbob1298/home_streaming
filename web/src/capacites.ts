@@ -17,11 +17,9 @@
  * ═════════════════════════════════════════════════════════════════════════════
  */
 
-/**
- * L'en-tête que le serveur lit. Son nom est fixé dans
- * `server/src/playback/capacites.ts` — les deux doivent rester d'accord.
- */
-export const HEVC_HEADER = 'X-Client-Hevc';
+import { HEVC_HEADER } from '@partage/entetes.js';
+
+export { HEVC_HEADER };
 
 /**
  * Ce navigateur décode-t-il le HEVC 10 bits (Main 10, niveau 5.1) ?

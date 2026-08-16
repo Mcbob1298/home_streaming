@@ -78,6 +78,12 @@ COPY web/tsconfig*.json web/vite.config.ts web/index.html ./web/
 COPY web/src ./web/src
 COPY web/public ./web/public
 
+# Le nom des en-têtes partagés avec le serveur. Il vit sous `server/src` parce
+# que le serveur compile avec `rootDir: "src"` et ne peut pas viser plus haut ;
+# Vite, lui, sait suivre l'alias `@partage` hors de `web/`. Sans cette copie,
+# la construction du front échoue sur un import introuvable.
+COPY server/src/partage ./server/src/partage
+
 RUN npm --prefix web run build
 
 # ------------------------------------------------------------------------------

@@ -28,17 +28,18 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-/**
- * L'en-tête que le lecteur pose sur CHACUNE de ses requêtes.
+/*
+ * Le nom vit dans `partage/entetes.ts`, importé À L'IDENTIQUE par le front. Une
+ * chaîne écrite deux fois se cherche deux fois — et c'est exactement ce qui a
+ * fait croire un instant que la sonde manquait du bundle servi.
  *
- * Un en-tête et non un paramètre d'URL, parce que la capacité doit accompagner
- * le manifeste maître, les playlists de rendu ET les segments : ce sont autant
- * de routes qui peuvent créer la session, et une seule d'entre elles qui
- * l'oublierait produirait un flux dans l'autre codec au milieu d'une lecture.
- * Un paramètre d'URL demanderait de le propager dans chaque URL émise par le
- * serveur ; `xhrSetup` de hls.js pose l'en-tête sur tout, en un seul endroit.
+ * Un en-tête et non un paramètre d'URL : la capacité doit accompagner le
+ * manifeste maître, les playlists ET les segments, autant de routes qui peuvent
+ * créer la session. `xhrSetup` de hls.js le pose sur tout, en un seul endroit.
  */
-export const HEVC_HEADER = 'x-client-hevc';
+import { HEVC_HEADER, HEVC_HEADER_RECU } from '../partage/entetes.js';
+
+export { HEVC_HEADER };
 
 /** Les valeurs qui valent OUI. Tout le reste, y compris l'absence, vaut non. */
 const OUI = new Set(['1', 'true', 'yes', 'oui']);
@@ -52,7 +53,7 @@ const OUI = new Set(['1', 'true', 'yes', 'oui']);
  * projet : hls.js ne se chargeait pas et rien ne le signalait.
  */
 export function clientDecodesHevc(headers: Record<string, unknown>): boolean {
-  const brut = headers[HEVC_HEADER];
+  const brut = headers[HEVC_HEADER_RECU];
   const valeur = Array.isArray(brut) ? brut[0] : brut;
   return typeof valeur === 'string' && OUI.has(valeur.trim().toLowerCase());
 }

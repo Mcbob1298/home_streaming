@@ -11,7 +11,9 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "baseUrl": ".",
+    "paths": { "@partage/*": ["../server/src/partage/*"] }
   },
   "include": ["src"]
 }

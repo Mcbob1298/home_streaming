@@ -67,6 +67,12 @@ export default defineConfig(({ command, mode }) => {
   }
 
   return {
+    resolve: {
+      // Le nom des en-têtes partagés avec le serveur. Il vit sous server/src
+      // parce que le serveur compile avec rootDir:src et ne peut pas viser plus
+      // haut ; Vite, lui, sait suivre un alias hors de web/.
+      alias: { '@partage': fileURLToPath(new URL('../server/src/partage', import.meta.url)) },
+    },
     plugins: [react(), tailwindcss()],
     server: {
       port: 5173,

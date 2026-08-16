@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { HEVC_HEADER, clientDecodesHevc } from './capacites.js';
+import { HEVC_HEADER_RECU } from '../partage/entetes.js';
 import { hdrPassthroughFor } from '../transcode/passthrough.js';
 import type { SourceInfo } from '../transcode/session.js';
 
@@ -17,7 +18,7 @@ const HDR10: SourceInfo = { width: 3840, height: 2160, frameRate: 23.976, hdr: '
 describe('clientDecodesHevc', () => {
   it('reconnaît les formes affirmatives', () => {
     for (const valeur of ['1', 'true', 'yes', 'oui', 'TRUE', ' 1 ']) {
-      expect(clientDecodesHevc({ [HEVC_HEADER]: valeur }), valeur).toBe(true);
+      expect(clientDecodesHevc({ [HEVC_HEADER_RECU]: valeur }), valeur).toBe(true);
     }
   });
 
@@ -33,13 +34,13 @@ describe('clientDecodesHevc', () => {
   it('refuse tout ce qui n’est pas un oui explicite', () => {
     const cas: Record<string, unknown>[] = [
       {},
-      { [HEVC_HEADER]: '0' },
-      { [HEVC_HEADER]: 'false' },
-      { [HEVC_HEADER]: '' },
-      { [HEVC_HEADER]: 'peut-être' },
-      { [HEVC_HEADER]: undefined },
-      { [HEVC_HEADER]: 1 },
-      { [HEVC_HEADER]: true },
+      { [HEVC_HEADER_RECU]: '0' },
+      { [HEVC_HEADER_RECU]: 'false' },
+      { [HEVC_HEADER_RECU]: '' },
+      { [HEVC_HEADER_RECU]: 'peut-être' },
+      { [HEVC_HEADER_RECU]: undefined },
+      { [HEVC_HEADER_RECU]: 1 },
+      { [HEVC_HEADER_RECU]: true },
       { 'x-autre-chose': '1' },
     ];
     for (const headers of cas) {
@@ -49,8 +50,8 @@ describe('clientDecodesHevc', () => {
 
   it('lit la première valeur quand l’en-tête est répété', () => {
     // Fastify rend un tableau si l'en-tête arrive deux fois.
-    expect(clientDecodesHevc({ [HEVC_HEADER]: ['1', '0'] })).toBe(true);
-    expect(clientDecodesHevc({ [HEVC_HEADER]: ['0', '1'] })).toBe(false);
+    expect(clientDecodesHevc({ [HEVC_HEADER_RECU]: ['1', '0'] })).toBe(true);
+    expect(clientDecodesHevc({ [HEVC_HEADER_RECU]: ['0', '1'] })).toBe(false);
   });
 });
 
@@ -84,5 +85,31 @@ describe('hdrPassthroughFor — la règle complète', () => {
 
   it('survit à une source inconnue', () => {
     expect(hdrPassthroughFor({ clientDecodesHevc: true, source: undefined, mode: 'transcode' })).toBe(false);
+  });
+});
+
+describe('le nom de l’en-tête', () => {
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * DEUX FORMES, UN SEUL LITTÉRAL, ET LEUR LIEN EST TESTÉ.
+   *
+   * Le front envoie `X-Client-Hevc` ; Node normalise les en-têtes REÇUS en
+   * minuscules, donc le serveur cherche `x-client-hevc`. Les deux étaient
+   * écrites à la main dans deux fichiers — toutes deux justes, mais un
+   * `grep x-client-hevc` sur le bundle servi n'a rien trouvé et a laissé croire
+   * un instant que la sonde en était absente.
+   *
+   * La seconde est maintenant DÉRIVÉE de la première. Ce test fixe le lien :
+   * changer la casse canonique ne peut plus désaccorder les deux moitiés.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  it('dérive la forme reçue de la forme canonique, sans la réécrire', () => {
+    expect(HEVC_HEADER_RECU).toBe(HEVC_HEADER.toLowerCase());
+  });
+
+  it('est bien celui que le front pose', () => {
+    // Si cette valeur change, le front DOIT changer avec — ils importent le
+    // même module, donc la seule façon de les désaccorder serait de dupliquer.
+    expect(HEVC_HEADER).toBe('X-Client-Hevc');
   });
 });
