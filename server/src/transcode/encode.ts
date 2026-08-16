@@ -21,7 +21,7 @@
  *    en réduisant du 5.1 en stéréo. Une matrice explicite les remonte.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-import { audioMapArgs, channelsOf, downmixFilter, type AudioChoice } from './args.js';
+import { ANALYZE_DURATION, PROBE_SIZE, audioMapArgs, channelsOf, downmixFilter, type AudioChoice } from './args.js';
 import {
   LIBPLACEBO_FILTER,
   TONE_MAP_OPENCL_FILTER,
@@ -571,7 +571,23 @@ export function keyframeArgs(segmentDuration: number, frameRate: number | null):
 export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
   const args: string[] = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
 
-  args.push('-probesize', '5M', '-analyzeduration', '2M');
+  /*
+   * Les MÊMES bornes que le remux et l'audio, prises à la même source.
+   *
+   * Elles étaient recopiées en dur ici — deux valeurs identiques par accident,
+   * qui auraient divergé au premier réglage. C'est le troisième exemplaire du
+   * même défaut dans cette séance, après la géométrie de sortie et le débit de
+   * l'empreinte de prélude.
+   *
+   * Sur leur valeur : Plex sonde 20 Mo et 20 s là où nous sondons 5 Mo et 2 s.
+   * Mesuré sur le fichier #365 et ses 27 flux, cache chaud, huit exécutions —
+   * les deux réglages voient EXACTEMENT les mêmes flux (3 vidéo, 6 audio, 16
+   * sous-titres) et coûtent le même temps, 2,29 à 2,34 s. La grande sonde
+   * n'achète rien ici. Attention au piège qui a failli conclure l'inverse : la
+   * première exécution paie la lecture à froid, 4 à 5 s, quel que soit le
+   * réglage — comparer sans alterner l'ordre mesure le cache, pas la sonde.
+   */
+  args.push('-probesize', PROBE_SIZE, '-analyzeduration', ANALYZE_DURATION);
 
   /*
    * Décodage MATÉRIEL, pas seulement l'encodage. `-hwaccel_output_format vaapi`
