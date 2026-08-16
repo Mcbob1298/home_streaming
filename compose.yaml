@@ -84,7 +84,7 @@ services:
     #
     # 1 Go. La machine a 7,5 Go dont 3,8 libres, et Plex en réserve déjà 4.
     tmpfs:
-      - /app/data/transcode:rw,size=1g,mode=1777
+      - /app/data/transcode:rw,size=4g,mode=1777
 
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/libraries').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

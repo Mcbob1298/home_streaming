@@ -88,7 +88,21 @@ describe('decidePlayback — remux', () => {
  * coûteux, et il ne doit JAMAIS attraper un fichier déjà en H.264.
  */
 describe('decidePlayback — transcodage', () => {
-  it('réencode le HEVC', () => {
+  it('RÉENCODE le HEVC : le navigateur le décode, mais pas à tout débit', () => {
+    /*
+     * Ce test a dit « remux » pendant une session, et c'était défendable :
+     * Chrome décode le HEVC Main 10, et le remux d'Avatar tourne à 49,2× le
+     * temps réel sans aucune perte.
+     *
+     * Il ne le LIT pas pour autant à tout débit. À 75,7 Mbps en 4K, 15 % des
+     * images sont perdues et la lecture se fige après trois minutes — mesuré,
+     * puis confirmé dans un vrai navigateur. Un seuil de débit aurait gardé les
+     * deux chemins ; on a préféré n'en garder qu'un, parce que dans ce projet
+     * chaque panne est née de la coexistence de deux mécanismes.
+     *
+     * Le HDR reste transporté intact par le réencodage : c'est l'acquis, et il
+     * ne dépendait pas du remux.
+     */
     const decision = decidePlayback(
       file({ extension: '.mkv', container: 'matroska', videoCodec: 'hevc' }),
       URLS,
@@ -96,8 +110,18 @@ describe('decidePlayback — transcodage', () => {
     );
     expect(decision.mode).toBe('transcode');
     expect(decision.source).toEqual({ url: URLS.hls, type: 'hls' });
-    expect(decision.reason).toContain('HEVC (H.265)');
-    expect(decision.reason).toContain('réencodée');
+  });
+
+  it('ne réencode que les codecs que le navigateur ne décode pas', () => {
+    // 35 MPEG-4 et 2 AV1 dans la bibliothèque : c'est tout ce qui reste.
+    for (const codec of ['mpeg4', 'av1', 'vc1']) {
+      const decision = decidePlayback(
+        file({ extension: '.mkv', container: 'matroska', videoCodec: codec }),
+        URLS,
+        WITH_FFMPEG,
+      );
+      expect(decision.mode).toBe('transcode');
+    }
   });
 
   it('réencode aussi le MPEG-4 et l’AV1', () => {

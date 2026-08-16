@@ -35,6 +35,7 @@ import {
   preludeSignature,
   publishPrelude,
 } from './prelude.js';
+import { hdrPassthroughFor } from './passthrough.js';
 import { TranscodeSession, type SessionInput, type SessionOptions } from './session.js';
 
 function readFileId(argv: string[]): number | null {
@@ -103,14 +104,28 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  const mode = resolved.decision.mode === 'transcode' ? 'transcode' : 'remux';
+
+  /*
+   * La MÊME règle que la route de lecture, prise au même endroit.
+   *
+   * Le premier essai l'avait oubliée : la commande produisait une amorce H.264
+   * tone-mappée pour une session qui attendait du HEVC. Le garde-fou d'empreinte
+   * l'a refusée — correctement — mais un prélude refusé à chaque fabrication est
+   * un prélude inutile.
+   */
+  const hdrPassthrough = hdrPassthroughFor(config, { mediaFileId: media.id, source: resolved.source, mode });
+
   const input: SessionInput = {
     mediaFileId: media.id,
     inputPath: media.rawPath ?? media.path,
     sizeBytes: media.sizeBytes,
     mtimeMs: media.mtimeMs,
     plan: resolved.plan,
-    mode: resolved.decision.mode === 'transcode' ? 'transcode' : 'remux',
+    mode,
     source: resolved.source,
+    // Ajouté seulement quand il est vrai : l'empreinte des autres ne bouge pas.
+    ...(hdrPassthrough ? { hdrPassthrough: true } : {}),
     muxedAudio: resolved.muxedAudio,
     audioPlan: resolved.audioPlan,
     audioRenditions: resolved.audioRenditions,

@@ -24,18 +24,21 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { open, readFile, stat } from 'node:fs/promises';
+import { PassThrough } from 'node:stream';
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
-import { AUDIO_DIR } from '../config.js';
+import { AUDIO_DIR, loadConfig } from '../config.js';
 import type { Db } from '../db/index.js';
 import { staticInit, staticSegment, usableAudio } from '../transcode/audioStore.js';
 import { findMedia, resolvePlayback, type MediaRow, type ResolvedPlayback } from '../playback/resolve.js';
-import { bitrateFor, outputHeight } from '../transcode/encode.js';
+import { outputGeometry } from '../transcode/encode.js';
 import { buildMasterPlaylist, estimateBandwidth, needsMaster } from '../transcode/manifest.js';
 import type { SessionManager } from '../transcode/manager.js';
-import { buildPlaylist, buildSubtitlePlaylist, segmentFileName } from '../transcode/segments.js';
+import { hdrPassthroughFor } from '../transcode/passthrough.js';
+import { buildPlaylist, buildSubtitlePlaylist, segmentFileName, type PlannedSegment } from '../transcode/segments.js';
+import { lireTimescale, rendreAbsolu, TETE_OCTETS } from '../transcode/tfdt.js';
 import { AUDIO_BITRATE_BPS, readSubtitleTrack } from '../transcode/subtitles.js';
 import { streamUrlOf } from './stream.js';
 
@@ -52,7 +55,12 @@ async function resolve(db: Db, manager: SessionManager, media: MediaRow): Promis
     manager.ffmpegBinary,
     media,
     { file: streamUrlOf(media.id), hls: hlsUrlOf(media.id) },
-    { transcodeAvailable: true },
+    {
+      transcodeAvailable: true,
+      // Le client de ce fichier sait-il décoder le HEVC ? Aujourd'hui une liste
+      // de périmètre ; demain la négociation, sur un débit mesuré.
+      clientDecodesHevc: loadConfig().transcode.hevcClientFiles.includes(media.id),
+    },
   );
 }
 
@@ -92,6 +100,85 @@ async function sendWorkFile(reply: FastifyReply, file: string, contentType: stri
   void reply.header('Content-Length', stats.size);
   void reply.header('Cache-Control', 'no-store');
   return reply.send(createReadStream(file));
+}
+
+/**
+ * Cadence des pistes, par en-tête, invalidée par la date du fichier.
+ *
+ * Un en-tête pèse un kilo-octet et ne change qu'à la relance d'une exécution ;
+ * le relire à chaque segment serait un accès disque pour rien.
+ */
+const CADENCES = new Map<string, { mtimeMs: number; timescale: number | null }>();
+
+async function timescaleDe(initPath: string): Promise<number | null> {
+  try {
+    const stats = await stat(initPath);
+    const connue = CADENCES.get(initPath);
+    if (connue !== undefined && connue.mtimeMs === stats.mtimeMs) return connue.timescale;
+
+    const timescale = lireTimescale(await readFile(initPath));
+    CADENCES.set(initPath, { mtimeMs: stats.mtimeMs, timescale });
+    return timescale;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sert un fragment en GARANTISSANT que son horodatage est absolu.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * L'invariant est posé ici, au plus près du réseau, parce que c'est le seul
+ * endroit qui voie passer TOUS les fragments : ceux d'une exécution vivante,
+ * ceux d'un prélude, ceux du magasin audio pré-généré. Le détail du pourquoi est
+ * dans `tfdt.ts`.
+ *
+ * Seuls les premiers kilo-octets sont lus et réécrits — le `moof` est en tête de
+ * fragment. Le reste est diffusé sans jamais passer en mémoire : un segment
+ * vidéo pèse trois mégaoctets et il en part un toutes les quatre secondes de
+ * lecture.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+async function sendFragment(
+  reply: FastifyReply,
+  file: string,
+  initPath: string,
+  plan: PlannedSegment[],
+  debutDeclare: number,
+): Promise<unknown> {
+  const timescale = await timescaleDe(initPath);
+  // Sans cadence, on ne sait pas interpréter `tfdt` : servir tel quel vaut mieux
+  // que réécrire au hasard.
+  if (timescale === null) return sendWorkFile(reply, file, 'video/iso.segment');
+
+  const stats = await stat(file);
+  const handle = await open(file, 'r');
+
+  try {
+    const longueur = Math.min(TETE_OCTETS, stats.size);
+    const tete = Buffer.alloc(longueur);
+    await handle.read(tete, 0, longueur, 0);
+    rendreAbsolu(tete, timescale, debutDeclare, plan);
+
+    void reply.header('Content-Type', 'video/iso.segment');
+    // La correction se fait en place : la taille ne bouge pas.
+    void reply.header('Content-Length', stats.size);
+    void reply.header('Cache-Control', 'no-store');
+
+    const reste = handle.createReadStream({ start: longueur, autoClose: true });
+    const sortie = new PassThrough();
+    sortie.write(tete);
+    reste.pipe(sortie);
+    // Un lecteur qui abandonne en cours de route ne doit pas laisser le fichier
+    // ouvert derrière lui.
+    sortie.on('close', () => reste.destroy());
+    reste.on('error', (error) => sortie.destroy(error));
+
+    return reply.send(sortie);
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 function sendPlaylist(reply: FastifyReply, body: string): string {
@@ -146,6 +233,14 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
 
   /** La session du fichier, créée au besoin avec tout ce qu'il faut produire. */
   async function acquire(manager: SessionManager, media: MediaRow, resolved: ResolvedPlayback) {
+    // La règle vit dans `passthrough.ts`, partagée avec la fabrication des
+    // préludes : deux définitions divergeraient au premier changement.
+    const hdrPassthrough = hdrPassthroughFor(loadConfig(), {
+      mediaFileId: media.id,
+      source: resolved.source,
+      mode: resolved.decision.mode === 'transcode' ? 'transcode' : 'remux',
+    });
+
     return manager.acquire({
       mediaFileId: media.id,
       inputPath: media.rawPath ?? media.path,
@@ -154,6 +249,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       plan: resolved.plan,
       mode: resolved.decision.mode === 'transcode' ? 'transcode' : 'remux',
       source: resolved.source,
+      ...(hdrPassthrough ? { hdrPassthrough: true } : {}),
       muxedAudio: resolved.muxedAudio,
       audioPlan: resolved.audioPlan,
       audioRenditions: resolved.audioRenditions,
@@ -215,16 +311,38 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
      * réel de l'extraction, qui n'était alors pas mesuré.
      * ─────────────────────────────────────────────────────────────────────────
      */
-    const height = outputHeight(resolved.source.height);
+    /*
+     * Les dimensions et le débit ANNONCÉS sont ceux que l'encodeur PRODUIT.
+     *
+     * Ils étaient calculés ici indépendamment, et ils avaient divergé : le
+     * manifeste d'Avatar annonçait 6,2 Mbps pour un flux à 20, et la résolution
+     * de la SOURCE plutôt que celle de la sortie — donc fausse aussi sur le
+     * chemin tone-mappé, qui réduit à 1080p sans le dire. `outputGeometry` est
+     * désormais l'unique autorité, partagée avec `buildTranscodeArgs`.
+     */
+    const mode = resolved.decision.mode === 'transcode' ? 'transcode' : 'remux';
+    const sortie = outputGeometry({
+      sourceWidth: resolved.source.width,
+      sourceHeight: resolved.source.height,
+      hardware: manager.hardware,
+      mode,
+      sourceBitrate: media.bitrate,
+      hdrPassthrough: hdrPassthroughFor(loadConfig(), {
+        mediaFileId: media.id,
+        source: resolved.source,
+        mode,
+      }),
+    });
+
     return sendPlaylist(
       reply,
       buildMasterPlaylist(URLS, {
         audio: resolved.audioRenditions.length === 0 ? [] : resolved.tracks.audio,
         defaultAudio: resolved.tracks.defaultAudio,
         subtitles: [],
-        bandwidth: estimateBandwidth(bitrateFor(height), AUDIO_BITRATE_BPS),
-        width: resolved.source.width,
-        height: resolved.source.height,
+        bandwidth: estimateBandwidth(sortie.bitrate, AUDIO_BITRATE_BPS),
+        width: sortie.width,
+        height: sortie.height,
       }),
     );
   });
@@ -382,7 +500,13 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       });
     }
 
-    return sendWorkFile(reply, file, 'video/iso.segment');
+    return sendFragment(
+      reply,
+      file,
+      session.videoInitPath(),
+      resolved.plan,
+      (resolved.plan[index] as { start: number }).start,
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -441,9 +565,22 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
     const preGenere = usableAudio(
       AUDIO_DIR, media.id, media.sizeBytes, media.mtimeMs, resolved.audioPlan, resolved.audioRenditions,
     );
+    const debut = (resolved.audioPlan[index] as { start: number }).start;
+
+    /*
+     * Les pistes pré-générées passent par LE MÊME chemin que les autres.
+     *
+     * Elles sont déjà absolues — une seule exécution depuis zéro — et la
+     * correction le constate sans rien réécrire. C'est précisément ce que
+     * l'idempotence achète : pas de branche particulière à maintenir, donc pas
+     * de branche où l'invariant puisse être oublié.
+     */
     if (preGenere !== null) {
       const statique = staticSegment(preGenere, stream, index);
-      if (statique !== null) return sendWorkFile(reply, statique, 'video/iso.segment');
+      const enTete = staticInit(preGenere, stream);
+      if (statique !== null && enTete !== null) {
+        return sendFragment(reply, statique, enTete, resolved.audioPlan, debut);
+      }
     }
 
     const session = await acquire(manager, media, resolved);
@@ -454,7 +591,7 @@ export function registerHlsRoutes(app: FastifyInstance, db: Db, sessions: () => 
       });
     }
 
-    return sendWorkFile(reply, file, 'video/iso.segment');
+    return sendFragment(reply, file, session.audioInitPath(stream), resolved.audioPlan, debut);
   });
 
   // -------------------------------------------------------------------------

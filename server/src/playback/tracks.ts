@@ -463,6 +463,53 @@ function codecLabel(codec: string): string {
  * premières — c'est une piste d'accessibilité, la proposer d'office à qui ne
  * l'a pas demandée rendrait le film incompréhensible.
  */
+/**
+ * Langues audio EXPOSÉES au lecteur.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * TOUT CE QUI EST EXPOSÉ COÛTE, MÊME SI PERSONNE NE L'ÉCOUTE.
+ *
+ * Une piste déclarée dans le manifeste est une piste que le magasin statique
+ * doit pré-générer et que le disque doit porter. Sur Avatar, six pistes — dont
+ * trois russes et une ukrainienne — pesaient 1,47 Go pour deux langues
+ * réellement utilisées.
+ *
+ * La règle est donc : français, anglais, et RIEN d'autre — sauf la piste par
+ * défaut du fichier, gardée même si elle est d'une autre langue, pour ne jamais
+ * produire un film qu'on ne pourrait pas écouter.
+ * ═════════════════════════════════════════════════════════════════════════════
+ *
+ * Conséquence à connaître : une piste japonaise n'est plus proposée à moins
+ * d'être la piste par défaut. Sur cette bibliothèque, 471 pistes `jpn` sont
+ * concernées. Élargir revient à ajouter un code ici.
+ */
+export const LANGUES_EXPOSEES = new Set(['fr', 'en']);
+
+/**
+ * Restreint les pistes audio aux langues exposées.
+ *
+ * Appliqué en UN SEUL point — `tracksOf` —, en amont de tout le reste : le
+ * manifeste, les rendus, le plan audio, l'empreinte du magasin statique et
+ * celle du prélude en découlent tous. Filtrer plus loin laisserait deux
+ * inventaires diverger.
+ */
+export function filterExposedAudio(tracks: AudioTrackRow[]): AudioTrackRow[] {
+  // Une piste unique reste muxée dans la vidéo : rien à filtrer, et la retirer
+  // produirait un film muet.
+  if (tracks.length <= 1) return tracks;
+
+  const gardees = tracks.filter((track) => LANGUES_EXPOSEES.has(languageTag(track.language)));
+
+  const defaut = pickDefaultAudio(tracks);
+  if (defaut !== null && !gardees.some((track) => track.streamIndex === defaut)) {
+    const piste = tracks.find((track) => track.streamIndex === defaut);
+    if (piste !== undefined) gardees.push(piste);
+  }
+
+  if (gardees.length === 0) return tracks;
+  return gardees.sort((a, b) => a.streamIndex - b.streamIndex);
+}
+
 export function pickDefaultAudio(tracks: AudioTrackRow[]): number | null {
   if (tracks.length === 0) return null;
 

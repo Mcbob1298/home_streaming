@@ -100,6 +100,49 @@ export const DIRECT_EXTENSIONS = ['.mp4', '.m4v'] as const;
 export const DIRECT_CONTAINERS = ['mov', 'mp4'] as const;
 
 export const DIRECT_VIDEO_CODECS = ['h264'] as const;
+
+/**
+ * Codecs qu'il suffit de REMUXER, sans réencoder.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * LE HEVC EN A ÉTÉ RETIRÉ, APRÈS Y AVOIR ÉTÉ MIS.
+ *
+ * Chrome décode bel et bien le HEVC Main 10 — `MediaSource.isTypeSupported` sur
+ * `hvc1.2.4.L153.B0` répond vrai, et le remux d'Avatar tourne à 49,2× le temps
+ * réel contre 1,18× en réencodage, sans aucune perte puisque rien n'est encodé.
+ * Tout cela reste exact.
+ *
+ * Mais il ne le LIT pas pour autant à n'importe quel débit : à 75,7 Mbps en 4K,
+ * la lecture perd 15 % de ses images et se fige après trois minutes — mesuré
+ * dans l'instrument, puis confirmé dans un vrai navigateur avec carte
+ * graphique. Le tampon affichait +9,37 s au moment du blocage : ce n'est pas le
+ * transfert qui manquait, c'est le décodeur qui n'a pas tenu.
+ *
+ * On aurait pu poser un seuil de débit et garder les deux chemins. C'est
+ * précisément ce qu'on ne fait pas.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LA LEÇON DE CE PROJET : SUPPRIMER LE CAS PARTICULIER PLUTÔT QUE LE RÉPARER.
+ *
+ * L'amorce courte à côté du run normal — six secondes de film perdues. Le
+ * magasin audio statique à côté des sessions vivantes — un audio placé au
+ * double de sa position. Le remux et le transcodage avec leurs grilles
+ * différentes — des segments de 78 Mo qui dépassaient le tampon du lecteur.
+ * Trois fois, la panne est née de la COEXISTENCE, et trois fois la suppression
+ * du cas particulier a mieux marché que sa réparation.
+ *
+ * Un seul chemin qui fonctionne partout vaut mieux que deux dont l'un est plus
+ * rapide et casse sur certains fichiers. Le HEVC repart donc au réencodage,
+ * avec le HDR transporté intact — ce qui reste l'acquis majeur, et qui ne
+ * dépend pas du remux.
+ *
+ * Effet de bord bienvenu : le réencodage place ses images clés où il veut, donc
+ * il ne dépend d'aucun index. Les fichiers qui ne démarraient pas faute
+ * d'indexation redémarrent, et la passe globale n'a plus à être décidée.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export const REMUXABLE_VIDEO_CODECS = ['h264'] as const;
 export const DIRECT_AUDIO_CODECS = ['aac'] as const;
 
 /** Noms lisibles des codecs, pour que le message dise quelque chose à un humain. */
@@ -208,7 +251,7 @@ export interface PlaybackUrls {
 export function decidePlayback(
   file: PlayableFile,
   urls: PlaybackUrls,
-  options: { remuxAvailable?: boolean } = {},
+  options: { remuxAvailable?: boolean; clientDecodesHevc?: boolean } = {},
 ): PlaybackDecision {
   const common = {
     mediaFileId: file.id,
@@ -239,7 +282,26 @@ export function decidePlayback(
    * C'est la population la plus nombreuse — 59,3 % de la bibliothèque — et la
    * moins coûteuse. Ne jamais la faire passer par un réencodage vidéo.
    */
-  const videoIsCompatible = includes(DIRECT_VIDEO_CODECS, file.videoCodec);
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * « COMPATIBLE » DÉPEND DU CLIENT, PAS DU SEUL CODEC.
+   *
+   * `DIRECT_VIDEO_CODECS` ne contient que H.264 parce que c'est le seul codec
+   * que TOUT navigateur décode. Mais Chrome décode le HEVC Main 10 — vérifié par
+   * `MediaSource.isTypeSupported('video/mp4; codecs="hvc1.2.4.L153.B0"')`, et
+   * surtout pas par `canPlayType`, qui a déjà menti sur ce projet.
+   *
+   * Quand c'est le cas, un fichier HEVC n'a plus besoin d'être réencodé : il
+   * suffit de changer de conteneur. Mesuré sur Avatar : 49,2× le temps réel
+   * contre 1,18× en réencodage, et la qualité est celle du fichier — c'est une
+   * copie, pas un encodage. Tout le chantier du tone mapping disparaît avec.
+   *
+   * Le prix est le débit : 74,3 Mbps, soit le fichier lui-même. C'est ce que la
+   * négociation devra arbitrer, sur une mesure de débit réel et non sur une
+   * règle d'adresse IP.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  const videoIsCompatible = includes(REMUXABLE_VIDEO_CODECS, file.videoCodec);
 
   if (videoIsCompatible) {
     if (options.remuxAvailable !== true) {

@@ -122,6 +122,28 @@ const HLS_CONFIG = {
   maxBufferLength: 60,
   maxMaxBufferLength: 120,
   backBufferLength: 30,
+  /*
+   * ═══════════════════════════════════════════════════════════════════════════
+   * LA VALEUR PAR DÉFAUT — 60 Mo — EST PLUS PETITE QU'UN SEUL SEGMENT.
+   *
+   * `maxBufferLength` compte des SECONDES, `maxBufferSize` des OCTETS, et c'est
+   * le plus contraignant des deux qui gagne. Tant que les segments pesaient
+   * trois mégaoctets, la limite en octets ne se voyait pas.
+   *
+   * Depuis que le remux sert le fichier au bit près, un segment de 4K à
+   * 74 Mbps pèse 78 Mo — plus que le tampon entier. Mesuré : hls.js chargeait un
+   * segment, constatait le dépassement, et s'arrêtait. Le tampon vidéo ne
+   * dépassait jamais une plage unique et les huit déplacements échouaient tous,
+   * pendant que l'audio, léger, passait sans encombre.
+   *
+   * Dimensionné pour la bibliothèque, pas pour un fichier : un segment dépasse
+   * 60 Mo dès 48 Mbps avec des images clés tous les 10 s, dès 24 Mbps si elles
+   * sont espacées de 20 s. Trente-quatre fichiers dépassent 20 Mbps, sept
+   * dépassent 30. 600 Mo couvrent soixante secondes à 80 Mbps, donc le pire cas
+   * de la bibliothèque — et le fichier médian, à 4,7 Mbps, n'en occupera que 35.
+   * ═══════════════════════════════════════════════════════════════════════════
+   */
+  maxBufferSize: 600 * 1000 * 1000,
 };
 
 /**

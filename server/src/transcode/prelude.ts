@@ -89,9 +89,24 @@ export function preludeSignature(input: SessionInput, options: SessionOptions): 
   const videoSegments = countSegmentsBefore(input.plan, PRELUDE_SECONDS);
   const audioSegments = countSegmentsBefore(input.audioPlan, PRELUDE_SECONDS);
 
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * LA CLÉ DU TRANSPORT HDR N'EST AJOUTÉE QUE QUAND IL EST ACTIF.
+   *
+   * Une clé ajoutée inconditionnellement — même à `false` — changerait le JSON
+   * de TOUS les fichiers, donc leur empreinte, donc invaliderait des préludes
+   * parfaitement valables. Trois existent aujourd'hui pour des fichiers qui ne
+   * sont pas concernés par ce chemin, dont un en Dolby Vision.
+   *
+   * En ne l'ajoutant que sur le chemin neuf, le JSON des autres reste identique
+   * au bit près et leurs préludes gardent leur validité. Le garde-fou ne se
+   * déclenche que là où quelque chose a réellement changé.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
   const matiere = JSON.stringify({
     format: PRELUDE_FORMAT,
     mode: input.mode,
+    ...(input.hdrPassthrough === true ? { hdrPassthrough: true } : {}),
     // Les bornes RÉELLES du préfixe, pas la durée visée : c'est la grille.
     video: input.plan.slice(0, videoSegments).map((s) => [s.start, s.duration]),
     audio: input.audioPlan.slice(0, audioSegments).map((s) => [s.start, s.duration]),

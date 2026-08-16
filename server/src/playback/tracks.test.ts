@@ -18,6 +18,7 @@ import {
   labelSubtitleTracks,
   languageLabel,
   languageTag,
+  filterExposedAudio,
   pickDefaultAudio,
   pickDefaultSubtitle,
   preferenceFrom,
@@ -286,6 +287,52 @@ describe('labelAudioTracks — cas ordinaires', () => {
 });
 
 // ---------------------------------------------------------------------------
+
+describe('filterExposedAudio — français, anglais, et la piste par défaut', () => {
+  it('ne garde que fr et en sur Avatar, dont les six pistes en comptent quatre autres', () => {
+    // Les trois russes et l'ukrainienne partent : c'est ce qui libère les deux
+    // tiers du magasin audio statique.
+    const gardees = filterExposedAudio(AVATAR_AUDIO).map((track) => track.streamIndex);
+    expect(gardees).toEqual([1, 6]);
+  });
+
+  it('garde la piste par défaut même si elle n’est ni française ni anglaise', () => {
+    /*
+     * Sans cette exception, un film dont toutes les pistes sont japonaises
+     * n'aurait plus AUCUNE piste : un film muet plutôt qu'un film sous-titré.
+     */
+    const pistes = [
+      audio({ streamIndex: 1, language: 'jpn', isDefault: true }),
+      audio({ streamIndex: 2, language: 'kor' }),
+    ];
+    expect(filterExposedAudio(pistes).map((t) => t.streamIndex)).toEqual([1]);
+  });
+
+  it('rend les pistes dans l’ordre des flux, quel que soit l’ordre d’ajout', () => {
+    // La piste par défaut est ajoutée en dernier ; le plan et l'empreinte du
+    // magasin dépendent de cet ordre, il doit rester celui du fichier.
+    const pistes = [
+      audio({ streamIndex: 1, language: 'jpn', isDefault: true }),
+      audio({ streamIndex: 2, language: 'eng' }),
+    ];
+    expect(filterExposedAudio(pistes).map((t) => t.streamIndex)).toEqual([1, 2]);
+  });
+
+  it('ne touche pas à un fichier monopiste, fût-il d’une langue écartée', () => {
+    // Une seule piste reste muxée dans la vidéo : la retirer rendrait le film muet.
+    const pistes = [audio({ streamIndex: 1, language: 'rus' })];
+    expect(filterExposedAudio(pistes)).toHaveLength(1);
+  });
+
+  it('accepte les variantes de codes : fra, fr, eng', () => {
+    const pistes = [
+      audio({ streamIndex: 1, language: 'fra' }),
+      audio({ streamIndex: 2, language: 'rus' }),
+      audio({ streamIndex: 3, language: 'eng' }),
+    ];
+    expect(filterExposedAudio(pistes).map((t) => t.streamIndex)).toEqual([1, 3]);
+  });
+});
 
 describe('pickDefaultAudio', () => {
   it('choisit le français quand il existe', () => {

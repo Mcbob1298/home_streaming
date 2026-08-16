@@ -227,11 +227,17 @@ describe('buildRemuxArgs', () => {
     expect(buildRemuxArgs(base)).not.toContain('-output_ts_offset');
   });
 
-  it('décale les horodatages de sortie sur la position réelle', () => {
-    // Sans cela, une relance à 40 minutes produirait des segments horodatés à
-    // zéro et le lecteur croirait être revenu au début.
+  it('ne décale JAMAIS les horodatages de sortie, même sur une relance', () => {
+    /*
+     * On croyait que sans ce décalage « le lecteur croirait être revenu au
+     * début ». C'est l'inverse qui se produisait : ffmpeg n'applique pas
+     * `-output_ts_offset` aux fragments, il l'inscrit dans l'edit list de
+     * l'en-tête — et hls.js ne recharge jamais `EXT-X-MAP`. Le remux est touché
+     * comme le transcodage. Ne pas le réintroduire.
+     */
     const args = buildRemuxArgs({ ...base, startTime: 2400, startNumber: 601 });
-    expect(args[args.indexOf('-output_ts_offset') + 1]).toBe('2400.000');
+    expect(args).not.toContain('-output_ts_offset');
+    expect(args.indexOf('-ss')).toBeLessThan(args.indexOf('-i'));
   });
 
   it('numérote les segments à partir de l’index demandé', () => {

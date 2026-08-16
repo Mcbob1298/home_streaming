@@ -8,7 +8,10 @@
     "//": "Répertoire de travail des sessions ffmpeg. Monté en tmpfs par le compose : écrit et relu sans arrêt, et sans aucune raison de survivre à un redémarrage.",
     "workDir": "./data/transcode",
     "maxSessions": 4,
-    "idleSeconds": 60
+    "idleSeconds": 60,
+
+    "//hevcClientFiles": "Périmètre du transport HDR intact, provisoire : à remplacer par la négociation des capacités du client, pas à étendre fichier par fichier. Voir server/src/config.ts.",
+    "hevcClientFiles": [365]
   },
 
   "libraries": [

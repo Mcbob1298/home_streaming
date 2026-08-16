@@ -110,10 +110,15 @@ describe('buildAudioArgs', () => {
     expect(args[args.indexOf('-hls_segment_type') + 1]).toBe('fmp4');
   });
 
-  it('place -ss AVANT -i et décale les horodatages', () => {
+  it('place -ss AVANT -i et ne décale JAMAIS les horodatages de sortie', () => {
+    /*
+     * L'audio subit le même défaut que la vidéo : `-output_ts_offset` finit
+     * dans l'edit list de l'en-tête, que le lecteur ne relit pas, et la piste
+     * atterrit à la distance du saut de sa vraie place. Ne pas le réintroduire.
+     */
     const args = buildAudioArgs(audioOptions({ startTime: 2400, startNumber: 300 }));
     expect(args.indexOf('-ss')).toBeLessThan(args.indexOf('-i'));
-    expect(args[args.indexOf('-output_ts_offset') + 1]).toBe('2400.000');
+    expect(args).not.toContain('-output_ts_offset');
     expect(args[args.indexOf('-start_number') + 1]).toBe('300');
   });
 

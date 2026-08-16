@@ -114,6 +114,13 @@ export interface TranscodeRunOptions {
   device: string;
   /** Moteur de tone mapping retenu au démarrage, après essai réel. */
   toneMap: ToneMapBackend | null;
+  /**
+   * Transporter le HDR INTACT plutôt que le convertir.
+   *
+   * Décidé en amont (liste de périmètre aujourd'hui, capacité du client demain).
+   * Voir `hdrPassthroughArgs` pour ce que cela change et pourquoi.
+   */
+  hdrPassthrough?: boolean;
 }
 
 /** Hauteur maximale produite. Au-delà, le NAS travaille pour rien. */
@@ -137,6 +144,149 @@ export function bitrateFor(height: number): number {
 export function outputHeight(sourceHeight: number | null): number {
   if (sourceHeight === null || sourceHeight <= 0) return TARGET_HEIGHT;
   return Math.min(TARGET_HEIGHT, sourceHeight);
+}
+
+/**
+ * ═════════════════════════════════════════════════════════════════════════════
+ * TRANSPORTER LE HDR INTACT PLUTÔT QUE DE LE CONVERTIR.
+ *
+ * On a passé plusieurs sessions à chercher QUEL tone mapping appliquer. La
+ * bonne question était s'il fallait en appliquer un.
+ *
+ * `tonemap_vaapi` détruit l'information AVANT l'encodage : mesuré sur une scène
+ * sombre d'Avatar, le décile bas de luminance tombe à 0 — un dixième des pixels
+ * ramenés au noir absolu — là où un tone mapping logiciel le garde à 4 ou 5.
+ * Aucun débit ne récupère cela : 12, 16 et 21 Mbps donnent tous 0.
+ *
+ * La voie retenue est celle que Plex emploie sur ce même NAS, relevée dans sa
+ * ligne de commande : AUCUN tone mapping, sortie HEVC 10 bits, courbe PQ
+ * conservée jusqu'au client. Rien n'est détruit en amont, et c'est le lecteur —
+ * qui connaît l'écran, ce que le serveur ignore — qui décide du rendu.
+ *
+ * Trois conditions, toutes vérifiées par la mesure :
+ *   • le H.264 ne peut PAS porter ce flux : pas de profil 10 bits en VAAPI sur
+ *     cette puce, ffmpeg répond « Invalid argument ». D'où HEVC.
+ *   • le navigateur doit savoir le décoder — `MediaSource.isTypeSupported` sur
+ *     `hvc1.2.4.L153.B0`, et surtout pas `canPlayType`, qui a déjà menti ici.
+ *   • le coût : 1,38× le temps réel en 4K contre 4,96× pour la chaîne SDR, soit
+ *     une session au lieu de deux. Accepté : 164 fichiers sur 2796 sont HDR.
+ *
+ * On ne redimensionne pas non plus : réduire un HDR n'aurait aucun sens quand
+ * l'intention est justement de ne rien perdre.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+/** Débit du transport HDR. Celui de Plex, le temps que la règle le remplace. */
+export const HDR_PASSTHROUGH_BITRATE = 20_000_000;
+
+export function hdrPassthroughArgs(sourceWidth: number | null, sourceHeight: number | null): string[] {
+  const dimensions =
+    sourceWidth !== null && sourceHeight !== null && sourceWidth > 0 && sourceHeight > 0
+      ? `w=${sourceWidth}:h=${sourceHeight}:`
+      : '';
+
+  return [
+    // `p010` : le format 10 bits de VAAPI. C'est lui qui porte le HDR.
+    '-vf',
+    `scale_vaapi=${dimensions}format=p010`,
+    '-c:v',
+    'hevc_vaapi',
+    /*
+     * Pas de `-profile:v` : « main » désignerait le profil 8 bits et ferait
+     * échouer l'encodeur. Laissé à ffmpeg, qui déduit Main 10 du format p010 —
+     * c'est aussi ce que fait Plex, dont la commande n'en pose aucun.
+     */
+  ];
+}
+
+/**
+ * CE QUI SORT VRAIMENT : dimensions et débit, calculés UNE SEULE FOIS.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * LA MÊME LEÇON QUE `passthrough.ts`, SUR UN AUTRE COUPLE D'APPELANTS.
+ *
+ * `buildTranscodeArgs` décidait de la hauteur et du débit dans son corps ; le
+ * manifeste maître, lui, appelait `bitrateFor(outputHeight(...))` de son côté.
+ * Les deux calculs ont divergé dès que le transport HDR est apparu, et le
+ * manifeste d'Avatar annonçait :
+ *
+ *     BANDWIDTH=6192000   RESOLUTION=3840x2160
+ *
+ * soit 6,2 Mbps pour un flux qui en porte 20, et une résolution prise sur la
+ * SOURCE — donc fausse aussi sur le chemin tone-mappé, qui produit du 1080p en
+ * annonçant les dimensions d'origine.
+ *
+ * Rien ne cassait aujourd'hui : un manifeste à un seul rendu ne fait pas de
+ * bascule de débit. Mais c'est précisément la forme de défaut que ce dépôt a
+ * décidé de traiter comme un défaut — une règle écrite deux fois finit toujours
+ * par être vraie à un seul endroit.
+ *
+ * Une fonction, deux appelants, et l'encodeur reste l'autorité.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export interface OutputGeometry {
+  /** Le HDR est-il transporté intact, sans conversion ni redimensionnement ? */
+  passthrough: boolean;
+  width: number | null;
+  height: number;
+  /** Débit vidéo visé, en bits par seconde. */
+  bitrate: number;
+}
+
+export function outputGeometry(options: {
+  sourceWidth: number | null;
+  sourceHeight: number | null;
+  hardware: HardwareBackend | null;
+  hdrPassthrough?: boolean;
+  /**
+   * Le mode de la session. Absent = transcodage, seul cas où `buildTranscodeArgs`
+   * appelle cette fonction.
+   *
+   * En REMUX le flux vidéo est COPIÉ : ni redimensionnement, ni réencodage. Ses
+   * dimensions et son débit sont donc ceux de la source, et les faire passer par
+   * la règle de réduction annoncerait du 1080p là où transitent 4K intactes.
+   */
+  mode?: 'remux' | 'transcode';
+  /** Débit de la source, pour le remux. Celui du fichier, faute de mieux. */
+  sourceBitrate?: number | null;
+}): OutputGeometry {
+  if (options.mode === 'remux') {
+    return {
+      passthrough: false,
+      width: options.sourceWidth,
+      height: options.sourceHeight ?? outputHeight(options.sourceHeight),
+      bitrate:
+        options.sourceBitrate !== null && options.sourceBitrate !== undefined && options.sourceBitrate > 0
+          ? options.sourceBitrate
+          : bitrateFor(outputHeight(options.sourceHeight)),
+    };
+  }
+
+  /*
+   * Le transport intact n'existe que sur VAAPI : c'est `hevc_vaapi` qui porte le
+   * 10 bits. Sans lui, on retombe sur le chemin ordinaire — et le manifeste doit
+   * retomber avec, sinon il annoncerait 20 Mbps de HEVC là où passe du H.264.
+   */
+  const passthrough = options.hdrPassthrough === true && options.hardware === 'vaapi';
+
+  if (passthrough) {
+    return {
+      passthrough: true,
+      // On ne redimensionne pas : réduire un HDR contredirait l'intention.
+      width: options.sourceWidth,
+      height: options.sourceHeight ?? outputHeight(options.sourceHeight),
+      bitrate: HDR_PASSTHROUGH_BITRATE,
+    };
+  }
+
+  const height = outputHeight(options.sourceHeight);
+  const size = outputSize(options.sourceWidth, options.sourceHeight, height);
+
+  return {
+    passthrough: false,
+    width: size?.width ?? null,
+    height: size?.height ?? height,
+    bitrate: bitrateFor(height),
+  };
 }
 
 /**
@@ -346,16 +496,43 @@ export function softwareFilterChain(options: {
  * Intervalle entre images clés forcées.
  *
  * La vidéo étant réencodée, on place les images clés OÙ L'ON VEUT — ce que la
- * copie de flux du palier 1 ne permettait pas. Les segments tombent donc
- * exactement sur les durées annoncées par le manifeste, sans avoir à énumérer
- * les images clés de la source au préalable.
+ * copie de flux du palier 1 ne permettait pas, et c'est ce qui dispense
+ * d'énumérer les images clés de la source au préalable.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * « EXACTEMENT » EST FAUX, ET L'ÉCART EST BORNÉ PAR UNE DURÉE D'IMAGE.
+ *
+ * L'expression pose une image clé sur la PREMIÈRE image dont l'horodatage
+ * atteint `n × segmentDuration`, soit l'image `ceil(n × segmentDuration × fps)`.
+ * Sur une source à 24000/1001, mesuré sur vingt-cinq segments consécutifs :
+ *
+ *     4,004  8,008  …  40,040   puis 44,002292 — l'écart RETOMBE
+ *
+ * C'est une dent de scie de période onze segments, bornée à 41,7 ms. Elle ne
+ * s'accumule pas, et elle est sans conséquence : `EXTINF` sert à CHOISIR un
+ * segment, pas à dater les images — celles-ci sont jouées à leur PTS. Un écart
+ * de 41,7 ms dans un segment de quatre secondes ne peut jamais désigner le
+ * mauvais segment.
+ *
+ * Ne pas « corriger » cet écart en déclarant `frames/fps` dans le manifeste sans
+ * changer aussi l'encodeur : le manifeste dériverait alors linéairement contre
+ * une production qui, elle, reste bornée.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 export function keyframeArgs(segmentDuration: number, frameRate: number | null): string[] {
   const args = ['-force_key_frames', `expr:gte(t,n_forced*${segmentDuration})`];
 
   /*
-   * Un intervalle maximal double sécurise le cas où l'expression ne tombe pas
-   * juste — sur une source à cadence variable, notamment.
+   * ATTENTION : cette branche est MORTE en l'état.
+   *
+   * `frameRate` vaut toujours `null` — `resolve.ts` l'écrit en dur, et
+   * `media_file` ne porte aucune colonne de cadence. `-g` n'est donc jamais
+   * émis, et le garde-fou décrit ci-dessous n'a jamais protégé quoi que ce soit.
+   *
+   * Ce qu'il ferait s'il était alimenté : borner l'intervalle entre images clés
+   * pour le cas où l'expression ne tombe pas juste, typiquement sur une source à
+   * cadence variable. Le faire vivre suppose de stocker la cadence — chantier
+   * séparé, à ne pas mêler à une enquête en cours.
    */
   if (frameRate !== null && frameRate > 0) {
     args.push('-g', String(Math.round(frameRate * segmentDuration)));
@@ -403,7 +580,14 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
   args.push(...audioMapArgs(options.audio));
   args.push('-sn', '-dn', '-map_chapters', '-1');
 
-  const height = outputHeight(options.sourceHeight);
+  const sortie = outputGeometry({
+    sourceWidth: options.sourceWidth,
+    sourceHeight: options.sourceHeight,
+    hardware: options.hardware,
+    hdrPassthrough: options.hdrPassthrough,
+  });
+  const passthrough = sortie.passthrough;
+  const height = sortie.height;
 
   const geometry = {
     targetHeight: height,
@@ -412,7 +596,9 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
     sourceHeight: options.sourceHeight,
   };
 
-  if (options.hardware === 'vaapi') {
+  if (passthrough) {
+    args.push(...hdrPassthroughArgs(options.sourceWidth, options.sourceHeight));
+  } else if (options.hardware === 'vaapi') {
     args.push('-vf', vaapiFilterChain({ ...geometry, toneMap: options.toneMap }));
     args.push('-c:v', 'h264_vaapi');
     // Profil « main » : universellement décodé, et suffisant en 8 bits.
@@ -428,7 +614,13 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
     args.push('-pix_fmt', 'yuv420p');
   }
 
-  const bitrate = bitrateFor(height);
+  /*
+   * Le débit du transport HDR est aligné sur celui de Plex — 20 Mbps, relevé
+   * dans sa ligne de commande — parce que c'est la référence à laquelle la
+   * comparaison à l'œil a été faite. À remplacer par la règle déduite du débit
+   * source, qui est le chantier suivant : une constante ici est provisoire.
+   */
+  const bitrate = sortie.bitrate;
   args.push('-b:v', String(bitrate), '-maxrate', String(Math.round(bitrate * 1.5)), '-bufsize', String(bitrate * 2));
 
   args.push(...keyframeArgs(options.segmentDuration, options.frameRate));
@@ -468,7 +660,15 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
     args.push('-af', downmixFilter(channelsOf(options.audio)));
   }
 
-  if (options.startTime > 0) args.push('-output_ts_offset', options.startTime.toFixed(3));
+  /*
+   * Pas de `-output_ts_offset`, et c'est délibéré.
+   *
+   * ffmpeg ne l'applique pas aux fragments : il ramène leurs horodatages à zéro
+   * et inscrit le décalage dans l'edit list de l'en-tête. Comme hls.js ne
+   * recharge jamais `EXT-X-MAP`, les segments d'une relance étaient présentés
+   * avec l'en-tête du premier run — donc à une position fausse d'exactement la
+   * distance du saut. Le détail de la mesure est en tête de `args.ts`.
+   */
 
   args.push('-f', 'hls');
   args.push('-hls_time', String(options.segmentDuration));

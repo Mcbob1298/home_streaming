@@ -55,6 +55,17 @@ export class SessionManager {
   }
 
   /**
+   * Accélération retenue au démarrage.
+   *
+   * Exposée parce que le MANIFESTE en dépend : le transport HDR intact n'existe
+   * que sur VAAPI, et les dimensions comme le débit annoncés doivent suivre la
+   * même branche que l'encodeur. Voir `outputGeometry`.
+   */
+  get hardware(): SessionOptions['hardware'] {
+    return this.options.hardware;
+  }
+
+  /**
    * Efface le répertoire de travail et arme le balayage.
    *
    * Repartir d'un répertoire vide est volontaire : les segments d'une session

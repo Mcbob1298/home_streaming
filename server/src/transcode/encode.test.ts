@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  HDR_PASSTHROUGH_BITRATE,
   TARGET_HEIGHT,
   bitrateFor,
   buildTranscodeArgs,
   downmixFilter,
   keyframeArgs,
   needsToneMapping,
+  outputGeometry,
   outputHeight,
   outputSize,
   shouldResize,
@@ -62,6 +64,78 @@ describe('bitrateFor', () => {
 
   it('monte pour une sortie au-dessus de 1080p', () => {
     expect(bitrateFor(2160)).toBeGreaterThan(bitrateFor(1080));
+  });
+});
+
+describe('outputGeometry', () => {
+  const vaapi = { hardware: 'vaapi' as const };
+
+  it('transporte la 4K INTACTE quand le HDR passe sans conversion', () => {
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true });
+    expect(g.passthrough).toBe(true);
+    expect(g).toMatchObject({ width: 3840, height: 2160, bitrate: HDR_PASSTHROUGH_BITRATE });
+  });
+
+  it('réduit à 1080p et à son débit sans le transport HDR', () => {
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi });
+    expect(g.passthrough).toBe(false);
+    expect(g).toMatchObject({ width: 1920, height: 1080, bitrate: bitrateFor(1080) });
+  });
+
+  /*
+   * Le garde-fou du transport : hors VAAPI, aucun encodeur ne porte le 10 bits
+   * ici. Annoncer 20 Mbps de HEVC là où passe du H.264 tromperait le lecteur.
+   */
+  it('ignore le transport HDR quand l’accélération n’est pas VAAPI', () => {
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, hardware: null, hdrPassthrough: true });
+    expect(g.passthrough).toBe(false);
+    expect(g.bitrate).toBe(bitrateFor(1080));
+  });
+
+  /*
+   * LE CAS QUI A MOTIVÉ LA FONCTION : le manifeste et l'encodeur avaient
+   * divergé. Ces deux tests fixent l'accord plutôt que les valeurs.
+   */
+  it('donne au manifeste EXACTEMENT ce que l’encodeur produit — transport HDR', () => {
+    const args = buildTranscodeArgs(options({ sourceWidth: 3840, sourceHeight: 2160, hdrPassthrough: true }));
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true });
+
+    expect(args[args.indexOf('-b:v') + 1]).toBe(String(g.bitrate));
+    expect(args.join(' ')).toContain(`scale_vaapi=w=${g.width}:h=${g.height}:format=p010`);
+  });
+
+  it('donne au manifeste EXACTEMENT ce que l’encodeur produit — chemin ordinaire', () => {
+    const args = buildTranscodeArgs(options({ sourceWidth: 3840, sourceHeight: 2160 }));
+    const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi });
+
+    expect(args[args.indexOf('-b:v') + 1]).toBe(String(g.bitrate));
+    expect(args.join(' ')).toContain(`w=${g.width}:h=${g.height}`);
+  });
+
+  /*
+   * En REMUX le flux est COPIÉ. Le réduire sur le papier annoncerait 1080p là où
+   * transitent des 4K, et 6 Mbps là où en passent soixante-quinze.
+   */
+  it('laisse le remux à ses dimensions et à son débit de source', () => {
+    const g = outputGeometry({
+      sourceWidth: 3840,
+      sourceHeight: 2160,
+      ...vaapi,
+      mode: 'remux',
+      sourceBitrate: 75_719_053,
+    });
+    expect(g).toMatchObject({ width: 3840, height: 2160, bitrate: 75_719_053 });
+  });
+
+  it('retombe sur la règle de hauteur quand le débit source est inconnu', () => {
+    const g = outputGeometry({ sourceWidth: 1920, sourceHeight: 1080, ...vaapi, mode: 'remux', sourceBitrate: null });
+    expect(g.bitrate).toBe(bitrateFor(1080));
+  });
+
+  it('survit à une source sans dimensions connues', () => {
+    const g = outputGeometry({ sourceWidth: null, sourceHeight: null, ...vaapi });
+    expect(g.height).toBe(TARGET_HEIGHT);
+    expect(g.width).toBeNull();
   });
 });
 
@@ -386,9 +460,17 @@ describe('buildTranscodeArgs', () => {
     expect(args[args.indexOf('-b:v') + 1]).toBe('6000000');
   });
 
-  it('décale les horodatages sur une relance en cours de film', () => {
+  it('ne décale JAMAIS les horodatages de sortie, même sur une relance', () => {
+    /*
+     * `-output_ts_offset` n'atteint pas les fragments : ffmpeg ramène leurs
+     * horodatages à zéro et met le décalage dans l'edit list de l'en-tête, que
+     * hls.js ne recharge jamais. Le segment se présentait alors à 0,041 s au
+     * lieu de 2400 s. Sans l'argument, tous les runs écrivent le même en-tête
+     * et c'est hls.js qui place les fragments. Ne pas le réintroduire.
+     */
     const args = buildTranscodeArgs(options({ startTime: 2400, startNumber: 601 }));
-    expect(args[args.indexOf('-output_ts_offset') + 1]).toBe('2400.000');
+    expect(args).not.toContain('-output_ts_offset');
+    // Le déplacement se fait toujours à l'entrée, lui.
     expect(args.indexOf('-ss')).toBeLessThan(args.indexOf('-i'));
     expect(args[args.indexOf('-start_number') + 1]).toBe('601');
   });

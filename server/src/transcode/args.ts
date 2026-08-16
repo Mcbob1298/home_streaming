@@ -13,6 +13,7 @@
  * plusieurs minutes. Ne jamais réencoder une vidéo déjà compatible.
  * ─────────────────────────────────────────────────────────────────────────────
  */
+import { bridageArgs } from './debit.js';
 import { AUDIO_SAMPLE_RATE, INIT_FILE_NAME, SEGMENT_PATTERN } from './segments.js';
 
 /**
@@ -149,6 +150,14 @@ export function buildRemuxArgs(options: RemuxRunOptions): string[] {
    */
   if (options.startTime > 0) args.push('-ss', options.startTime.toFixed(3));
 
+  /*
+   * Le bridage vient JUSTE AVANT `-i` : c'est une option d'entrée.
+   *
+   * Sans lui, la copie de flux court à 49× le temps réel et remplit le tmpfs
+   * d'un gigaoctet en quelques secondes. Voir `debit.ts` pour les chiffres.
+   */
+  args.push(...bridageArgs());
+
   args.push('-i', options.input);
 
   // `-t` borne l'exécution d'amorce : elle ne produit que ses trois segments
@@ -183,12 +192,36 @@ export function buildRemuxArgs(options: RemuxRunOptions): string[] {
   }
 
   /*
-   * Les segments produits doivent porter leur position RÉELLE dans le film,
-   * pas une position relative au début de l'exécution. Sans ce décalage, une
-   * relance à 40 minutes produirait des segments horodatés à zéro et le
-   * lecteur croirait être revenu au début.
+   * ═══════════════════════════════════════════════════════════════════════════
+   * PAS DE `-output_ts_offset` ICI, ET C'EST LA CORRECTION D'UN DÉFAUT MAJEUR.
+   *
+   * L'intention était juste : un segment produit par une relance à 40 minutes
+   * doit se présenter à 40 minutes, pas à zéro. Mais ffmpeg n'applique PAS ce
+   * décalage aux fragments. Il ramène leurs horodatages à zéro et inscrit le
+   * décalage dans l'`elst` — l'edit list de l'EN-TÊTE. Mesuré sur une relance
+   * au segment 600 :
+   *
+   *     elst du run initial        : edit vide de       41 ms
+   *     elst du run relancé à 2400 : edit vide de 2 400 000 ms
+   *     tfdt du segment 600 produit par la relance : 0
+   *
+   * Or hls.js ne recharge jamais `EXT-X-MAP` : il garde l'en-tête chargé au
+   * démarrage. Le segment 600 était donc présenté à 0,041 s au lieu de 2400 s
+   * — une erreur ÉGALE À LA DISTANCE DU SAUT. C'est le « saut qui atterrit
+   * 1200 s ailleurs ».
+   *
+   * Aucun argument ne change ce comportement : `-copyts` provoque un
+   * segmentation fault avec la chaîne VAAPI, et `-avoid_negative_ts disabled`,
+   * `-muxdelay 0`, `-movflags +negative_cts_offsets` laissent tous le décalage
+   * dans l'edit list.
+   *
+   * Sans l'argument, en revanche, TOUS les runs écrivent le même en-tête au bit
+   * près — vérifié aux positions 0, 600, 2400, 5000 et 9000 s. Celui que le
+   * lecteur détient reste donc valable pour toujours, et c'est hls.js qui place
+   * chaque fragment via `timestampOffset`, déduit du manifeste. Ce qu'il sait
+   * faire, et ce que la présence d'un décalage l'empêchait de faire proprement.
+   * ═══════════════════════════════════════════════════════════════════════════
    */
-  if (options.startTime > 0) args.push('-output_ts_offset', options.startTime.toFixed(3));
 
   args.push('-f', 'hls');
   args.push('-hls_time', String(options.segmentDuration));
@@ -265,7 +298,9 @@ function sortieAudio(options: Omit<AudioRunOptions, 'input'>): string[] {
   args.push('-c:a', 'aac', '-b:a', AUDIO_BITRATE, '-ac', '2', '-ar', String(AUDIO_SAMPLE_RATE));
   args.push('-af', downmixFilter(options.channels));
 
-  if (options.startTime > 0) args.push('-output_ts_offset', options.startTime.toFixed(3));
+  // Pas de `-output_ts_offset` : voir l'explication en tête de ce fichier. Le
+  // décalage atterrirait dans l'edit list de l'en-tête, que le lecteur ne relit
+  // jamais, et le segment se présenterait à zéro plutôt qu'à sa position.
 
   args.push('-f', 'hls');
   args.push('-hls_time', String(options.segmentDuration));
@@ -326,7 +361,9 @@ export function buildAudioArgs(options: AudioRunOptions): string[] {
   args.push('-c:a', 'aac', '-b:a', AUDIO_BITRATE, '-ac', '2', '-ar', String(AUDIO_SAMPLE_RATE));
   args.push('-af', downmixFilter(options.channels));
 
-  if (options.startTime > 0) args.push('-output_ts_offset', options.startTime.toFixed(3));
+  // Pas de `-output_ts_offset` : voir l'explication en tête de ce fichier. Le
+  // décalage atterrirait dans l'edit list de l'en-tête, que le lecteur ne relit
+  // jamais, et le segment se présenterait à zéro plutôt qu'à sa position.
 
   args.push('-f', 'hls');
   args.push('-hls_time', String(options.segmentDuration));

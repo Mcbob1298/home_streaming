@@ -20,6 +20,7 @@ import {
 import type { AudioRendition, SourceInfo } from '../transcode/session.js';
 import { decidePlayback, type PlaybackDecision, type PlaybackUrls } from './playability.js';
 import {
+  filterExposedAudio,
   labelAudioTracks,
   pickDefaultAudio,
   selectSubtitleTracks,
@@ -44,13 +45,16 @@ export interface MediaRow {
   mtimeMs: number;
   dvProfile: number | null;
   dvBlCompat: number | null;
+  /** Débit du fichier, en bits par seconde. Ce que le REMUX transporte vraiment. */
+  bitrate: number | null;
 }
 
 export const MEDIA_COLUMNS = `
   id, path, raw_path AS rawPath, extension, container,
   video_codec AS videoCodec, audio_codec AS audioCodec, resolution,
   duration_seconds AS durationSeconds, hdr, size_bytes AS sizeBytes,
-  mtime_ms AS mtimeMs, dv_profile AS dvProfile, dv_bl_compat AS dvBlCompat
+  mtime_ms AS mtimeMs, dv_profile AS dvProfile, dv_bl_compat AS dvBlCompat,
+  bitrate
 `;
 
 export function findMedia(db: Db, id: number): MediaRow | undefined {
@@ -109,7 +113,7 @@ export async function resolveDecision(
   ffmpegBinary: string,
   media: MediaRow,
   urls: PlaybackUrls,
-  options: { transcodeAvailable: boolean },
+  options: { transcodeAvailable: boolean; clientDecodesHevc?: boolean },
 ): Promise<{ decision: PlaybackDecision; source: SourceInfo; tracks: TrackSelection }> {
   const enriched = await ensureDolbyVision(db, ffmpegBinary, media);
   const tracks = tracksOf(db, media.id);
@@ -132,7 +136,7 @@ export async function resolveDecision(
       hdr: enriched.hdr,
     },
     urls,
-    { remuxAvailable: options.transcodeAvailable },
+    { remuxAvailable: options.transcodeAvailable, clientDecodesHevc: options.clientDecodesHevc === true },
   );
 
   if (enriched.hdr === 'Dolby Vision' && enriched.dvProfile !== null) {
@@ -176,7 +180,7 @@ export async function resolvePlayback(
   ffmpegBinary: string,
   media: MediaRow,
   urls: PlaybackUrls,
-  options: { transcodeAvailable: boolean },
+  options: { transcodeAvailable: boolean; clientDecodesHevc?: boolean },
 ): Promise<ResolvedPlayback> {
   const { decision, source, tracks } = await resolveDecision(db, ffmpegBinary, media, urls, options);
   const enriched = media;
@@ -249,7 +253,7 @@ export interface TrackSelection {
 }
 
 export function tracksOf(db: Db, mediaFileId: number): TrackSelection {
-  const audioRows = (
+  const toutes = (
     db
       .prepare(
         `SELECT stream_index AS streamIndex, codec, channels, language, title, is_default AS isDefault
@@ -257,6 +261,16 @@ export function tracksOf(db: Db, mediaFileId: number): TrackSelection {
       )
       .all(mediaFileId) as (Omit<AudioTrackRow, 'isDefault'> & { isDefault: number })[]
   ).map((row) => ({ ...row, isDefault: row.isDefault === 1 }));
+
+  /*
+   * LE FILTRE DE LANGUES EST POSÉ ICI, ET NULLE PART AILLEURS.
+   *
+   * Tout ce qui décrit l'audio d'un fichier descend de cet appel : le manifeste,
+   * les rendus, le plan, l'empreinte du magasin statique, celle du prélude. Un
+   * second filtre posé plus bas ferait diverger deux inventaires — et une
+   * empreinte qui ne correspond plus, c'est un magasin qu'on régénère pour rien.
+   */
+  const audioRows = filterExposedAudio(toutes);
 
   const subtitleRows = (
     db

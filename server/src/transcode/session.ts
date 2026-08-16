@@ -25,11 +25,12 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { copyFile, mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 import { buildAudioArgs, buildRemuxArgs, planRuns, type AudioChoice, type RunPlan } from './args.js';
+import { aElaguer, RECUL_SECONDES } from './debit.js';
 import { seedFromPrelude } from './prelude.js';
 import type { ToneMapBackend } from './capabilities.js';
 import { buildTranscodeArgs, type HardwareBackend, type HdrKind } from './encode.js';
@@ -62,6 +63,21 @@ import {
  * Ce qui change : la copie est refaite à CHAQUE exécution. L'en-tête servi est
  * donc toujours celui du run qui produit les segments servis, jamais celui d'un
  * run précédent.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * DEPUIS, LA CAUSE ELLE-MÊME A ÉTÉ RETIRÉE.
+ *
+ * Refaire la copie ne suffisait pas : le lecteur, lui, ne recharge JAMAIS
+ * `EXT-X-MAP`. Réécrire l'en-tête servi ne change rien à celui qu'il détient
+ * déjà, et les segments d'une relance restaient interprétés avec le mauvais —
+ * décalés d'exactement la distance du saut.
+ *
+ * `-output_ts_offset` a donc été supprimé (voir `args.ts`). Tous les runs
+ * écrivent désormais un en-tête identique au bit près, quelle que soit leur
+ * position de départ. La copie garde son autre raison d'être — servir un
+ * `init.mp4` en cours de réécriture donnerait un fichier tronqué — mais elle ne
+ * porte plus aucune correction.
+ * ─────────────────────────────────────────────────────────────────────────────
  * ═════════════════════════════════════════════════════════════════════════════
  */
 const INIT_SNAPSHOT = 'init-stable.mp4';
@@ -128,6 +144,14 @@ export interface SessionInput {
    */
   mode: 'remux' | 'transcode';
   source?: SourceInfo;
+  /**
+   * Transporter le HDR intact, sans tone mapping ni redimensionnement.
+   *
+   * Optionnel et absent par défaut : c'est ce qui permet à l'empreinte du
+   * prélude de rester IDENTIQUE pour tout ce qui garde l'ancien chemin. Voir
+   * `preludeSignature`.
+   */
+  hdrPassthrough?: boolean;
   /**
    * Piste audio muxée DANS la vidéo.
    *
@@ -231,7 +255,58 @@ class SegmentProducer {
    *   • il est bientôt produit     → on attend, le remux va vite ;
    *   • il est loin devant/derrière → on relance ffmpeg à sa position.
    */
+  /**
+   * Efface les segments trop en arrière de la position lue.
+   *
+   * ───────────────────────────────────────────────────────────────────────────
+   * SANS CELA, UN REMUX 4K REMPLIT LE TMPFS EN DEUX MINUTES.
+   *
+   * Le répertoire de travail est un tmpfs d'un gigaoctet, donc de la mémoire
+   * vive. Un segment de remux 4K pèse 78 Mo : douze tiennent, pas un de plus.
+   * En transcodage la question ne se posait pas — 3 Mo le segment, une session
+   * entière y tenait.
+   *
+   * On garde `RECUL_SECONDES` de film derrière la tête de lecture pour qu'un
+   * petit retour en arrière — le bouton « −10 s », un ajustement de la barre —
+   * ne relance pas ffmpeg. Au-delà, ce qui est passé ne servira plus.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
+  private elaguer(index: number): void {
+    const position = this.plan[index]?.start;
+    if (position === undefined) return;
+
+    if (position - RECUL_SECONDES <= 0) return;
+
+    /*
+     * ON BALAIE LE RÉPERTOIRE. On ne descend PAS depuis la position lue.
+     *
+     * La première version parcourait les index à reculons et s'arrêtait au
+     * premier fichier absent. Après un déplacement, les segments juste avant la
+     * nouvelle position n'ont jamais été produits : la boucle s'arrêtait aussitôt
+     * et n'atteignait jamais ceux des positions précédentes.
+     *
+     * Mesuré en conditions réelles — huit sauts, cinquante-huit segments
+     * accumulés, 2742 Mo de tmpfs occupés et pas un seul fichier effacé. Une
+     * lecture linéaire ne l'aurait jamais montré : c'est justement le cas où les
+     * index se suivent sans trou.
+     */
+    let noms: string[];
+    try {
+      noms = readdirSync(this.dir);
+    } catch {
+      return;
+    }
+
+    for (const nom of aElaguer(noms, this.plan, index)) {
+      rmSync(path.join(this.dir, nom), { force: true });
+    }
+  }
+
   async ensureSegment(index: number): Promise<string | null> {
+    // La position demandée est la seule information dont on dispose sur la tête
+    // de lecture : le serveur ne la connaît pas autrement.
+    this.elaguer(index);
+
     const file = path.join(this.dir, segmentFileName(index));
     if (existsSync(file)) return file;
 
@@ -351,9 +426,31 @@ class SegmentProducer {
       }
 
       this.state = 'failed';
-      this.lastError = stderr.trim().split('\n').at(-1) ?? `ffmpeg a quitté avec le code ${code}`;
+      const dernière = stderr.trim().split('\n').at(-1) ?? `ffmpeg a quitté avec le code ${code}`;
+
+      /*
+       * LA SATURATION DU RÉPERTOIRE DE TRAVAIL DOIT SE DIRE, PAS SE DEVINER.
+       *
+       * Le tmpfs fait un gigaoctet, et un segment de remux 4K en pèse 78 Mo.
+       * S'il déborde, ffmpeg s'arrête sur un « No space left on device » noyé
+       * dans sa sortie d'erreur — le lecteur, lui, ne voit qu'un segment qui
+       * n'arrive pas, et attend trente secondes avant d'abandonner sans motif.
+       *
+       * On reconnaît donc le cas et on le nomme, pour que la cause soit lisible
+       * dans les journaux comme dans la réponse HTTP.
+       */
+      const satureee = /no space left|ENOSPC/i.test(stderr);
+      this.lastError = satureee
+        ? 'Le répertoire de travail est plein : la production s’arrête. ' +
+          'Augmenter la taille du tmpfs, ou réduire l’avance produite.'
+        : dernière;
+
       this.child = null;
-      this.options.onLog('ffmpeg en échec', { sortie: this.label, code, stderr: this.lastError });
+      this.options.onLog(satureee ? 'répertoire de travail saturé' : 'ffmpeg en échec', {
+        sortie: this.label,
+        code,
+        stderr: dernière,
+      });
     });
   }
 
@@ -540,6 +637,22 @@ export class TranscodeSession {
     return producer.ensureInit();
   }
 
+  /*
+   * Chemins des en-têtes, pour y lire la CADENCE de la piste.
+   *
+   * C'est l'unité des `tfdt`, et elle ne figure que dans l'en-tête — un fragment
+   * seul ne la porte pas. La route en a besoin pour rendre les horodatages
+   * absolus avant de servir (voir `tfdt.ts`). On expose le chemin plutôt que la
+   * disposition des répertoires, qui reste l'affaire de la session.
+   */
+  videoInitPath(): string {
+    return path.join(this.dir, 'v', INIT_FILE_NAME);
+  }
+
+  audioInitPath(streamIndex: number): string {
+    return path.join(this.dir, `a-${streamIndex}`, INIT_FILE_NAME);
+  }
+
   /** Erreur du rendu audio, pour la réponse HTTP. */
   audioError(streamIndex: number): string | null {
     return this.audio.get(streamIndex)?.status.error ?? null;
@@ -569,6 +682,7 @@ export class TranscodeSession {
           hardware: this.options.hardware,
           device: this.options.device,
           toneMap: this.options.toneMap,
+          hdrPassthrough: this.input.hdrPassthrough === true,
         })
       : buildRemuxArgs(common);
   }
