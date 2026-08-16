@@ -545,6 +545,91 @@ La liste des codecs réencodables est **fermée** : un codec inconnu est refusé
 le nommant, plutôt que lancé dans un transcodage qui échouerait après trente
 secondes d'attente.
 
+### Le transport HDR intact, et son plafond
+
+Un fichier HDR10 dont le client sait décoder le HEVC 10 bits n'est **pas**
+tone-mappé : il sort en HEVC Main 10, courbe PQ et primaires BT.2020
+conservées, et c'est le lecteur — qui connaît l'écran, ce que le serveur ignore
+— qui décide du rendu. C'est la voie que Plex emploie sur cette machine, relevée
+dans sa ligne de commande réelle.
+
+`transcode.hdrMaxHeight` plafonne la définition de **ce chemin uniquement** :
+
+```json
+"transcode": {
+  "hdrMaxHeight": 2160
+}
+```
+
+| | plafond | pourquoi |
+| --- | --- | --- |
+| chemin ordinaire | `TARGET_HEIGHT`, 1080p, en dur | il **normalise** vers ce que tout navigateur décode |
+| transport HDR | `hdrMaxHeight`, 2160 par défaut | il **préserve** une source qu'on a décidé de ne pas dégrader |
+
+Deux règles ne dépendent d'aucun réglage :
+
+- **on ne monte jamais.** Le plafond passe par un `Math.min` avec la hauteur de
+  la source : un fichier 1080p reste en 1080p, même avec `hdrMaxHeight` à 4320 ;
+- **le débit suit la résolution**, par `bitrateFor` — 12 Mb/s au-dessus de
+  1080p, 6 en dessous. Il n'y a pas de débit à régler séparément.
+
+Baisser `hdrMaxHeight` **invalide les préludes du transport HDR**, et eux seuls :
+la géométrie de sortie entre dans leur empreinte. Les regénérer avec
+`npm run prelude -- --file <id>`.
+
+### Ce que la 4K coûte, mesuré
+
+La 4K est un choix **assumé**, pas un défaut heureux. Sur le poste de référence
+(Wi-Fi ~70 Mb/s, écran 1080p, GTX 1060) :
+
+| | 4K | 1080p |
+| --- | --- | --- |
+| démarrage | 773 ms | 757 ms |
+| premier segment | 1,0 Mo | 1,0 Mo |
+| marge de tampon 10 s après un saut | +3,5 à +7,5 s | +10,9 à +18,5 s |
+| **reprise après un saut** | **4,1 à 6,2 s** | **1,6 à 2,2 s** |
+| images perdues sur dix minutes | 21 / 13 665 | 16 / 14 378 |
+
+**Le démarrage ne coûte rien à la 4K** : à débit égal, la résolution ne change
+pas le poids des segments, et c'est le poids qui décide du temps de transport.
+
+**Ce qui coûte, c'est le saut** — cinq secondes avant que l'image reparte, contre
+deux en 1080p. La cause n'est ni le réseau ni le débit mais la VITESSE
+D'ENCODAGE : le transcodeur tient ~1,7× le temps réel en 4K contre ~5× en 1080p.
+L'écart entre deux sauts successifs n'y change rien (mesuré à 2, 4, 6 et 10 s de
+distance) : ce n'est pas le saut rapproché qui coûte, c'est tout saut.
+
+La marge de tampon, elle, n'est pas un plafond mais un **transitoire** : elle
+croît d'environ 0,7 s par seconde de lecture. Mesuré aux attentes de 10, 20 et
+35 s — trois points, pour distinguer une croissance d'une constante. En regardant
+normalement, le coussin se constitue.
+
+> **Question ouverte — le décrochage périodique du décodeur.**
+>
+> Sur le chemin 4K, environ **une fenêtre de décrochage par tranche de dix
+> minutes** : la lecture avance de 7,4 s en 30 s de temps réel, à 6 images par
+> seconde, puis repart normalement en gardant le retard accumulé (23 s).
+>
+> Ce n'est **pas** un problème d'alimentation : le tampon reste couvert à la
+> position lue pendant tout l'épisode, `readyState` vaut 4, et aucun `waiting`
+> n'est émis. C'est le décodeur du poste qui cale.
+>
+> Deux relevés de dix minutes, deux manifestations de ce qui semble être le même
+> événement :
+>
+> | run | images perdues | forme |
+> | --- | --- | --- |
+> | 1 | **336** / 14 322 | pertes massives, cadence tenue |
+> | 2 | **21** / 13 665 | peu de pertes, une fenêtre à 6 i/s |
+>
+> Les runs 1080p n'en ont jamais montré, sur cinq passes de dix minutes. Si une
+> gêne apparaît à l'usage, c'est la première piste — et `hdrMaxHeight` à 1080 est
+> le repli immédiat, sans reconstruction.
+>
+> Reproduire : `AVEC_FENETRE=1 node blocage.mjs 365 600`, machine au repos. Ne
+> **rien** lancer d'autre sur le poste pendant la mesure : un `tsc` concurrent a
+> déjà fabriqué un faux blocage de dix minutes.
+
 ### Trois chaînes de filtres, et pourquoi
 
 `tonemap_vaapi` ne fait **que** la conversion de plage dynamique. Ses seules
