@@ -191,7 +191,7 @@ export function outputHeight(sourceHeight: number | null): number {
  * ═════════════════════════════════════════════════════════════════════════════
  */
 /** Débit du transport HDR. Celui de Plex, le temps que la règle le remplace. */
-export const HDR_PASSTHROUGH_BITRATE = 12_000_000;
+export const HDR_PASSTHROUGH_BITRATE = 20_000_000;
 
 export function hdrPassthroughArgs(width: number | null, height: number | null): string[] {
   /*
@@ -305,6 +305,10 @@ export function outputGeometry(options: {
    * un écran qui en fait 1920×1080.
    * ───────────────────────────────────────────────────────────────────────────
    */
+  if (passthrough) {
+    return { passthrough: true, width: options.sourceWidth, height: options.sourceHeight ?? outputHeight(options.sourceHeight), bitrate: HDR_PASSTHROUGH_BITRATE };
+  }
+
   const height = outputHeight(options.sourceHeight);
   const size = outputSize(options.sourceWidth, options.sourceHeight, height);
 
@@ -571,7 +575,7 @@ export function keyframeArgs(segmentDuration: number, frameRate: number | null):
 export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
   const args: string[] = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
 
-  args.push('-probesize', '5M', '-analyzeduration', '2M');
+  args.push('-probesize', '20000000', '-analyzeduration', '20000000');
 
   /*
    * Décodage MATÉRIEL, pas seulement l'encodage. `-hwaccel_output_format vaapi`
@@ -648,7 +652,7 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
    * source, qui est le chantier suivant : une constante ici est provisoire.
    */
   const bitrate = sortie.bitrate;
-  args.push('-b:v', String(bitrate), '-maxrate', String(Math.round(bitrate * 1.5)), '-bufsize', String(bitrate * 2));
+  args.push('-b:v', String(bitrate), '-maxrate', String(sortie.passthrough ? bitrate : Math.round(bitrate * 1.5)), '-bufsize', String(bitrate * 2));
 
   args.push(...keyframeArgs(options.segmentDuration, options.frameRate));
 

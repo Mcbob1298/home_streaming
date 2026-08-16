@@ -53,7 +53,7 @@
  * de la durée, c'est la moitié des octets.
  * ═════════════════════════════════════════════════════════════════════════════
  */
-export const SEGMENT_DURATION = 4;
+export const SEGMENT_DURATION = 3;
 
 /**
  * L'AMORCE : combien de segments courts, et de quelle durée.
@@ -75,7 +75,7 @@ export const SEGMENT_DURATION = 4;
  * segments entiers (6 = 3 × 2), et la frontière est une borne du plan.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-export const PRIMER_COUNT = 3;
+export const PRIMER_COUNT = 0;
 export const PRIMER_DURATION = 2;
 
 /** Fin de l'amorce, en secondes. La frontière entre l'amorce et la croisière. */
