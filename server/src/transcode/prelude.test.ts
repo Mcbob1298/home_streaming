@@ -11,6 +11,7 @@ import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { HDR_PASSTHROUGH_BITRATE, outputGeometry } from './encode.js';
 import { planAudioSegments, planSegments } from './segments.js';
 import {
   PRELUDE_SECONDS,
@@ -95,9 +96,14 @@ function poser(input: SessionInput, options: SessionOptions = OPTIONS): string {
 describe('planPrelude — la grille RÉELLE, pas la durée visée', () => {
   it('s’arrête sur des bornes de segment', () => {
     const plan = planPrelude(entree());
-    // Grille uniforme de 4 s : 0,4,8,12,16,20 → 6 segments jusqu'à 24 s.
-    expect(plan.videoSegments).toBe(6);
-    expect(plan.videoEnd).toBe(24);
+    /*
+     * L'amorce puis la croisière : 0,2,4 puis 6,10,14,18,22 — huit segments qui
+     * commencent avant 24 s, et le dernier finit à 26. Le prélude va donc un peu
+     * PLUS loin que la durée visée, ce qui est le comportement voulu : on prend
+     * des segments entiers, jamais une fraction de segment.
+     */
+    expect(plan.videoSegments).toBe(8);
+    expect(plan.videoEnd).toBe(26);
     // Audio : 8 s exactement, donc 0,8,16 → 3 segments jusqu'à 24 s.
     expect(plan.audioSegments).toBe(3);
     expect(plan.audioEnd).toBe(24);
@@ -155,6 +161,34 @@ describe('preludeSignature — elle change dès que les octets changeraient', ()
     expect(preludeSignature(autre, OPTIONS)).not.toBe(base);
   });
 
+  it('SUIT le débit et les dimensions produits, même quand l’entrée ne bouge pas', () => {
+    /*
+     * ═══════════════════════════════════════════════════════════════════════
+     * UN TEST À VALEUR FIGÉE, ET C'EST DÉLIBÉRÉ.
+     *
+     * Toutes les entrées de `outputGeometry` — dimensions de la source,
+     * accélération, mode, transport HDR — sont DÉJÀ des clés de l'empreinte.
+     * Aucun jeu d'entrées ne peut donc isoler la géométrie : sa vraie valeur
+     * est de réagir aux CONSTANTES, `HDR_PASSTHROUGH_BITRATE` en tête, qu'un
+     * test ne peut pas faire varier.
+     *
+     * D'où la valeur figée. Elle échoue dès que les octets produits
+     * changeraient — ce qui est exactement le rôle du garde-fou. La faire
+     * évoluer est normal ; la faire évoluer SANS régénérer les préludes ne
+     * l'est pas, et c'est ce que cet échec vient rappeler.
+     * ═══════════════════════════════════════════════════════════════════════
+     */
+    expect(outputGeometry({
+      sourceWidth: 3840,
+      sourceHeight: 2160,
+      hardware: 'vaapi',
+      mode: 'transcode',
+      hdrPassthrough: true,
+    })).toEqual({ passthrough: true, width: 1920, height: 1080, bitrate: HDR_PASSTHROUGH_BITRATE });
+
+    expect(HDR_PASSTHROUGH_BITRATE).toBe(12_000_000);
+  });
+
   it('change si une piste audio est ajoutée', () => {
     const autre = entree({ audioRenditions: [{ streamIndex: 1, channels: 6 }] });
     expect(preludeSignature(autre, OPTIONS)).not.toBe(base);
@@ -208,9 +242,13 @@ describe('seedFromPrelude', () => {
     const sortie = path.join(racine, 'session', 'v');
     mkdirSync(sortie, { recursive: true });
 
+    // Tous les segments du plan, plus init.mp4. Le prelude.json n'est pas
+    // dans « v ». Le compte est DÉDUIT du plan : le figer en dur ferait échouer
+    // ce test à chaque changement de grille sans rien dire de `seedFromPrelude`.
+    const attendus = planPrelude(input).videoSegments + 1;
+
     return seedFromPrelude(dir, sortie).then((poses) => {
-      // 6 segments + init.mp4. Le prelude.json n'est pas dans « v ».
-      expect(poses).toBe(7);
+      expect(poses).toBe(attendus);
     });
   });
 
@@ -221,8 +259,9 @@ describe('seedFromPrelude', () => {
     mkdirSync(sortie, { recursive: true });
     writeFileSync(path.join(sortie, 'seg-00000.m4s'), 'deja la');
 
+    // Un de moins que le compte complet : celui qui était déjà là.
     const poses = await seedFromPrelude(dir, sortie);
-    expect(poses).toBe(6);
+    expect(poses).toBe(planPrelude(input).videoSegments);
   });
 
   it('ne casse pas quand le prélude n’existe pas', async () => {

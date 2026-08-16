@@ -34,6 +34,7 @@ import { mkdir, readdir, rename, rm, symlink, copyFile, writeFile } from 'node:f
 import path from 'node:path';
 
 import type { SessionInput, SessionOptions } from './session.js';
+import { outputGeometry } from './encode.js';
 import { countSegmentsBefore, INIT_FILE_NAME, segmentFileName } from './segments.js';
 
 /**
@@ -91,18 +92,32 @@ export function preludeSignature(input: SessionInput, options: SessionOptions): 
 
   /*
    * ───────────────────────────────────────────────────────────────────────────
-   * LA CLÉ DU TRANSPORT HDR N'EST AJOUTÉE QUE QUAND IL EST ACTIF.
+   * LE DÉBIT ET LES DIMENSIONS FIGURENT ICI, ET ILS Y MANQUAIENT.
    *
-   * Une clé ajoutée inconditionnellement — même à `false` — changerait le JSON
-   * de TOUS les fichiers, donc leur empreinte, donc invaliderait des préludes
-   * parfaitement valables. Trois existent aujourd'hui pour des fichiers qui ne
-   * sont pas concernés par ce chemin, dont un en Dolby Vision.
+   * L'empreinte promet de couvrir « tout ce qui entre dans la construction des
+   * arguments ffmpeg ». Elle portait la grille, le mode, l'accélération et le
+   * tone mapping — mais pas `-b:v`, qui décide pourtant du poids de chaque
+   * octet produit. Faire passer le transport HDR de 20 à 12 Mbps changeait donc
+   * la totalité des segments SANS que le garde-fou ne s'en aperçoive : la
+   * lecture aurait servi vingt-six secondes à 20 Mbps puis basculé à 12.
    *
-   * En ne l'ajoutant que sur le chemin neuf, le JSON des autres reste identique
-   * au bit près et leurs préludes gardent leur validité. Le garde-fou ne se
-   * déclenche que là où quelque chose a réellement changé.
+   * Une clé ajoutée invalide les préludes existants — c'est le prix, et il est
+   * d'une régénération. Le taire pour les préserver reviendrait à garder un
+   * garde-fou qui ne garde pas ce qu'il annonce ; c'est exactement le genre de
+   * demi-vérité que ce dépôt paie ensuite au décuple.
+   *
+   * `outputGeometry` est la même autorité que celle de l'encodeur et du
+   * manifeste : l'empreinte ne recalcule rien, elle interroge.
    * ───────────────────────────────────────────────────────────────────────────
    */
+  const sortie = outputGeometry({
+    sourceWidth: input.source?.width ?? null,
+    sourceHeight: input.source?.height ?? null,
+    hardware: options.hardware,
+    mode: input.mode,
+    hdrPassthrough: input.hdrPassthrough === true,
+  });
+
   const matiere = JSON.stringify({
     format: PRELUDE_FORMAT,
     mode: input.mode,
@@ -115,6 +130,7 @@ export function preludeSignature(input: SessionInput, options: SessionOptions): 
     source: input.source ?? null,
     hardware: options.hardware,
     toneMap: options.toneMap,
+    sortie: [sortie.width, sortie.height, sortie.bitrate],
   });
 
   return createHash('sha256').update(matiere).digest('hex').slice(0, 32);

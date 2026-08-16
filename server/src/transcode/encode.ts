@@ -171,18 +171,35 @@ export function outputHeight(sourceHeight: number | null): number {
  *   • le coût : 1,38× le temps réel en 4K contre 4,96× pour la chaîne SDR, soit
  *     une session au lieu de deux. Accepté : 164 fichiers sur 2796 sont HDR.
  *
- * On ne redimensionne pas non plus : réduire un HDR n'aurait aucun sens quand
- * l'intention est justement de ne rien perdre.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * ON REDIMENSIONNE, ET C'EST UN REVIREMENT MESURÉ.
+ *
+ * Ce paragraphe disait l'inverse : « réduire un HDR n'aurait aucun sens quand
+ * l'intention est de ne rien perdre ». L'argument était esthétique, la mesure a
+ * tranché autrement — et pas sur le débit, sur la VITESSE D'ENCODAGE.
+ *
+ * En 4K le transcodeur tient ~1,7× le temps réel. La marge de tampon après un
+ * déplacement croît donc lentement : moins de 5 s dix secondes après le saut,
+ * contre +57 à +87 s sur le chemin 1080p qui encode à ~5×. Mesuré aux attentes
+ * de 10, 20 et 35 s pour vérifier que c'était bien une croissance et non un
+ * plafond.
+ *
+ * Réduire coûte des pixels — sur un écran qui en fait 1920×1080. Cela garde ce
+ * qui était le but : HEVC 10 bits, courbe PQ, primaires BT.2020. Le HDR voyage
+ * intact, simplement à la définition de l'écran.
+ * ─────────────────────────────────────────────────────────────────────────────
  * ═════════════════════════════════════════════════════════════════════════════
  */
 /** Débit du transport HDR. Celui de Plex, le temps que la règle le remplace. */
-export const HDR_PASSTHROUGH_BITRATE = 20_000_000;
+export const HDR_PASSTHROUGH_BITRATE = 12_000_000;
 
-export function hdrPassthroughArgs(sourceWidth: number | null, sourceHeight: number | null): string[] {
+export function hdrPassthroughArgs(width: number | null, height: number | null): string[] {
+  /*
+   * Les dimensions de SORTIE, pas celles de la source : c'est `outputGeometry`
+   * qui les décide, et elle est aussi ce que le manifeste annonce.
+   */
   const dimensions =
-    sourceWidth !== null && sourceHeight !== null && sourceWidth > 0 && sourceHeight > 0
-      ? `w=${sourceWidth}:h=${sourceHeight}:`
-      : '';
+    width !== null && height !== null && width > 0 && height > 0 ? `w=${width}:h=${height}:` : '';
 
   return [
     // `p010` : le format 10 bits de VAAPI. C'est lui qui porte le HDR.
@@ -268,24 +285,34 @@ export function outputGeometry(options: {
    */
   const passthrough = options.hdrPassthrough === true && options.hardware === 'vaapi';
 
-  if (passthrough) {
-    return {
-      passthrough: true,
-      // On ne redimensionne pas : réduire un HDR contredirait l'intention.
-      width: options.sourceWidth,
-      height: options.sourceHeight ?? outputHeight(options.sourceHeight),
-      bitrate: HDR_PASSTHROUGH_BITRATE,
-    };
-  }
-
+  /*
+   * ───────────────────────────────────────────────────────────────────────────
+   * LE TRANSPORT HDR PASSE PAR `outputHeight` COMME LE RESTE.
+   *
+   * Il ne redimensionnait pas : « réduire un HDR n'aurait aucun sens quand
+   * l'intention est de ne rien perdre ». L'intention était juste, la mesure l'a
+   * corrigée — et ce n'est PAS le débit qui a tranché, c'est la vitesse
+   * d'encodage.
+   *
+   * En 4K le transcodeur tourne à ~1,7× le temps réel. La marge de tampon après
+   * un déplacement croît donc de ~0,7 s par seconde de lecture, et vaut encore
+   * moins de 5 s dix secondes après le saut — contre +57 à +87 s sur le chemin
+   * 1080p, qui encode à ~5×. Mesuré aux trois attentes 10, 20 et 35 s.
+   *
+   * Ce qui est perdu en réduisant : des pixels. Ce qui est gardé, et qui était
+   * le but : le HEVC 10 bits, la courbe PQ et les primaires BT.2020 — vérifiés
+   * dans l'en-tête produit. Le HDR voyage intact, simplement en 1920×1080, sur
+   * un écran qui en fait 1920×1080.
+   * ───────────────────────────────────────────────────────────────────────────
+   */
   const height = outputHeight(options.sourceHeight);
   const size = outputSize(options.sourceWidth, options.sourceHeight, height);
 
   return {
-    passthrough: false,
+    passthrough,
     width: size?.width ?? null,
     height: size?.height ?? height,
-    bitrate: bitrateFor(height),
+    bitrate: passthrough ? HDR_PASSTHROUGH_BITRATE : bitrateFor(height),
   };
 }
 
@@ -597,7 +624,7 @@ export function buildTranscodeArgs(options: TranscodeRunOptions): string[] {
   };
 
   if (passthrough) {
-    args.push(...hdrPassthroughArgs(options.sourceWidth, options.sourceHeight));
+    args.push(...hdrPassthroughArgs(sortie.width, sortie.height));
   } else if (options.hardware === 'vaapi') {
     args.push('-vf', vaapiFilterChain({ ...geometry, toneMap: options.toneMap }));
     args.push('-c:v', 'h264_vaapi');

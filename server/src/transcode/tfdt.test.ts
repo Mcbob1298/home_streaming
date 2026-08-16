@@ -33,6 +33,19 @@ function enTete(timescale: number, version: 0 | 1 = 0): Buffer {
 const PLAN = planSegments(3600);
 const TS = 24_000;
 
+/**
+ * Des bornes RÉELLES du plan, lues dedans plutôt qu'écrites en dur.
+ *
+ * Ces tests portaient « 2400 » et « 1200 », qui étaient des bornes tant que la
+ * grille était uniforme à quatre secondes. L'amorce les a déplacées : la
+ * croisière compte depuis 6 s, donc les bornes valent 6 + 4k et 2400 n'en est
+ * plus une. Une borne écrite en dur teste la grille d'hier ; celles-ci suivent
+ * le plan, quelle qu'en soit la découpe.
+ */
+const BORNE = PLAN[600]!.start;
+const BORNE_APRES = PLAN[601]!.start;
+const AUTRE_BORNE = PLAN[300]!.start;
+
 describe('lireTimescale', () => {
   it('lit la cadence d’un mdhd version 0', () => {
     expect(lireTimescale(enTete(24_000))).toBe(24_000);
@@ -50,8 +63,8 @@ describe('lireTimescale', () => {
 describe('bornePlusProche', () => {
   it('ramène un instant bruité sur la borne du plan', () => {
     // La quantification des images clés décale d'au plus une durée d'image.
-    expect(bornePlusProche(PLAN, 2400.0417)).toBe(2400);
-    expect(bornePlusProche(PLAN, 2399.96)).toBe(2400);
+    expect(bornePlusProche(PLAN, BORNE + 0.0417)).toBe(BORNE);
+    expect(bornePlusProche(PLAN, BORNE - 0.04)).toBe(BORNE);
   });
 
   it('rend zéro pour un instant nul ou négatif', () => {
@@ -63,26 +76,26 @@ describe('bornePlusProche', () => {
   it('tient sur une cadence de 25 i/s, dont la dent de scie a une autre amplitude', () => {
     // À 25 i/s l'écart maximal est de 40 ms, à 29,97 de 33 ms : dans les deux
     // cas très loin des deux secondes qui feraient basculer l'arrondi.
-    expect(bornePlusProche(PLAN, 1200.04)).toBe(1200);
-    expect(bornePlusProche(PLAN, 1199.967)).toBe(1200);
+    expect(bornePlusProche(PLAN, AUTRE_BORNE + 0.04)).toBe(AUTRE_BORNE);
+    expect(bornePlusProche(PLAN, AUTRE_BORNE - 0.033)).toBe(AUTRE_BORNE);
   });
 });
 
 describe('rendreAbsolu', () => {
   it('ajoute le début du run à un fragment relatif', () => {
-    // Segment 600 (annoncé 2400 s) produit par une relance : tfdt reparti de 0.
+    // Segment 600 produit par une relance : son tfdt est reparti de zéro.
     const b = fragment(0);
-    const rendu = rendreAbsolu(b, TS, 2400, PLAN);
-    expect(rendu).toEqual({ corrige: true, debutRun: 2400 });
-    expect(tfdtDe(b)).toBe(2400 * TS);
+    const rendu = rendreAbsolu(b, TS, BORNE, PLAN);
+    expect(rendu).toEqual({ corrige: true, debutRun: BORNE });
+    expect(tfdtDe(b)).toBe(BORNE * TS);
   });
 
   it('préserve la contiguïté interne d’une exécution', () => {
     // Deuxième segment du même run : 4,004 s plus loin. L'écart doit survivre.
     const a = fragment(0);
     const b = fragment(Math.round(4.004 * TS));
-    rendreAbsolu(a, TS, 2400, PLAN);
-    rendreAbsolu(b, TS, 2404, PLAN);
+    rendreAbsolu(a, TS, BORNE, PLAN);
+    rendreAbsolu(b, TS, BORNE_APRES, PLAN);
     expect(tfdtDe(b) - tfdtDe(a)).toBe(Math.round(4.004 * TS));
   });
 
@@ -93,29 +106,29 @@ describe('rendreAbsolu', () => {
      * atterriraient au double de leur position — le défaut mesuré à 1792 s pour
      * un saut à 900 s.
      */
-    const b = fragment(2400 * TS);
-    expect(rendreAbsolu(b, TS, 2400, PLAN)).toEqual({ corrige: false, debutRun: 0 });
-    expect(tfdtDe(b)).toBe(2400 * TS);
+    const b = fragment(BORNE * TS);
+    expect(rendreAbsolu(b, TS, BORNE, PLAN)).toEqual({ corrige: false, debutRun: 0 });
+    expect(tfdtDe(b)).toBe(BORNE * TS);
   });
 
   it('est idempotente : deux passages valent un', () => {
     const b = fragment(0);
-    rendreAbsolu(b, TS, 2400, PLAN);
-    rendreAbsolu(b, TS, 2400, PLAN);
-    expect(tfdtDe(b)).toBe(2400 * TS);
+    rendreAbsolu(b, TS, BORNE, PLAN);
+    rendreAbsolu(b, TS, BORNE, PLAN);
+    expect(tfdtDe(b)).toBe(BORNE * TS);
   });
 
   it('absorbe la dent de scie sans se tromper de borne', () => {
-    // Le fragment dit 0,0417 s alors qu'il est annoncé à 2400 : la différence
-    // vaut 2399,9583, qui doit s'arrondir à 2400 et non à 2396.
+    // Le fragment dit 0,0417 s alors qu'il est annoncé à la borne : la
+    // différence doit s'arrondir à cette borne, et non à la précédente.
     const b = fragment(Math.round(0.0417 * TS));
-    expect(rendreAbsolu(b, TS, 2400, PLAN).debutRun).toBe(2400);
+    expect(rendreAbsolu(b, TS, BORNE, PLAN).debutRun).toBe(BORNE);
   });
 
   it('gère un tfdt version 1, sur soixante-quatre bits', () => {
     const b = fragment(0, 1);
-    expect(rendreAbsolu(b, TS, 2400, PLAN).corrige).toBe(true);
-    expect(tfdtDe(b, 1)).toBe(2400 * TS);
+    expect(rendreAbsolu(b, TS, BORNE, PLAN).corrige).toBe(true);
+    expect(tfdtDe(b, 1)).toBe(BORNE * TS);
   });
 
   it('renonce plutôt que de tronquer un entier 32 bits qui déborderait', () => {

@@ -19,26 +19,67 @@
  * Durée d'un segment vidéo. Quatre secondes : le compromis habituel.
  *
  * ═════════════════════════════════════════════════════════════════════════════
- * IL N'Y A PLUS D'AMORCE COURTE, ET C'ÉTAIT UN DÉFAUT DE CORRECTION.
+ * L'AMORCE COURTE EST DE RETOUR, PARCE QUE SA CAUSE D'ÉCHEC A DISPARU.
  *
- * Trois segments de deux secondes ouvraient la lecture, puis on passait à
- * quatre. Une seule exécution ffmpeg ne sachant pas changer de durée en cours de
- * route, il en fallait DEUX — et c'est là que tout se jouait : la seconde
+ * Trois segments de deux secondes ouvrent la lecture, puis on passe à quatre.
+ * Une seule exécution ffmpeg ne sachant pas changer de durée en cours de route,
+ * il en faut DEUX — et c'est là que tout se jouait autrefois : la seconde
  * portait `-output_ts_offset`, donc écrivait un en-tête fMP4 différent de la
- * première. Mesuré sur les deux fichiers `init.mp4` : deux octets d'écart, 6000
- * contre 41, soit exactement la longueur de l'amorce en millisecondes.
+ * première. Mesuré à l'époque sur les deux `init.mp4` : deux octets d'écart,
+ * 6000 contre 41, soit exactement la longueur de l'amorce en millisecondes. Le
+ * lecteur ne recevant qu'UN en-tête, les segments de la seconde exécution
+ * étaient lus avec le mauvais — six segments donnaient 432 images, dix-huit
+ * secondes de contenu sur une ligne de temps de douze.
  *
- * Or le lecteur ne reçoit qu'UN en-tête, figé depuis la première exécution. Les
- * segments de la seconde étaient donc interprétés avec le mauvais. Assemblés
- * comme le lecteur les assemble, les six premiers segments donnaient 432 images
- * — dix-huit secondes de contenu — sur une ligne de temps de douze secondes.
+ * L'amorce avait donc été retirée. Mais elle n'était pas la cause : elle en
+ * était le RÉVÉLATEUR. `-output_ts_offset` l'a été, et il a été supprimé depuis
+ * pour une raison sans rapport — il cassait aussi les déplacements.
  *
- * Une exécution unique supprime la cause plutôt que de la rattraper : un run,
- * un en-tête, aucune divergence possible. Le démarrage rapide, lui, est
- * désormais tenu par le prélude, qui sert de vrais fichiers déjà encodés.
+ * Vérifié avant de la remettre, avec le ffmpeg de production sur Avatar, trois
+ * exécutions comparées octet à octet :
+ *
+ *     -hls_time 2 depuis 0 s   86741ce4d59f9cdf443281c02268bc19   1151 o
+ *     -hls_time 4 depuis 6 s   86741ce4d59f9cdf443281c02268bc19   1151 o
+ *     -hls_time 4 depuis 0 s   86741ce4d59f9cdf443281c02268bc19   1151 o
+ *
+ * Ni la durée de segment ni la position de départ n'entrent dans l'en-tête. La
+ * divergence est structurellement impossible aujourd'hui, et `init-stable.mp4`
+ * fige de toute façon le premier produit.
+ *
+ * CE QU'ELLE APPORTE, ET POURQUOI LE PRÉLUDE NE SUFFISAIT PAS. Le prélude sert
+ * de vrais fichiers déjà encodés, donc rien à produire — mais il faut encore les
+ * TRANSPORTER. Sur la liaison de référence (~70 Mb/s), un premier segment 4K de
+ * quatre secondes pèse 7 Mo et coûte 870 ms avant la première image. La moitié
+ * de la durée, c'est la moitié des octets.
  * ═════════════════════════════════════════════════════════════════════════════
  */
 export const SEGMENT_DURATION = 4;
+
+/**
+ * L'AMORCE : combien de segments courts, et de quelle durée.
+ *
+ * Trois fois deux secondes. Le compte n'est pas arbitraire : il faut couvrir le
+ * temps que met la croisière à produire son premier segment, sans quoi la
+ * lecture rattrape l'amorce et attend quand même.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LA FRONTIÈRE N'A PAS À TOMBER SUR LA GRILLE DE CROISIÈRE, ET C'EST VOULU.
+ *
+ * Six secondes n'est pas un multiple de quatre. La croisière ne reprend donc pas
+ * une grille 0-4-8 : elle démarre À la frontière et compte à partir de là —
+ * 6-10, 10-14, 14-18. Il n'y a pas deux grilles à faire coïncider, il y en a
+ * UNE, celle que `planSegments` écrit et que le manifeste publie ; les bornes
+ * réelles sont donc justes par construction.
+ *
+ * Ce qui compte vraiment, et que le test vérifie : l'amorce se divise en
+ * segments entiers (6 = 3 × 2), et la frontière est une borne du plan.
+ * ─────────────────────────────────────────────────────────────────────────────
+ */
+export const PRIMER_COUNT = 3;
+export const PRIMER_DURATION = 2;
+
+/** Fin de l'amorce, en secondes. La frontière entre l'amorce et la croisière. */
+export const PRIMER_END = PRIMER_COUNT * PRIMER_DURATION;
 
 export interface PlannedSegment {
   index: number;
@@ -47,9 +88,11 @@ export interface PlannedSegment {
 }
 
 /**
- * Découpe une durée en segments de durée UNIFORME.
+ * Découpe une durée : l'amorce courte, puis la croisière.
  *
- * Le dernier segment est tronqué à la durée réelle.
+ * Le dernier segment est tronqué à la durée réelle. Un fichier plus court que
+ * l'amorce n'obtient que des segments courts, ce qui est le comportement voulu :
+ * il n'y a alors rien à quoi rendre la main.
  */
 export function planSegments(durationSeconds: number): PlannedSegment[] {
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return [];
@@ -58,12 +101,46 @@ export function planSegments(durationSeconds: number): PlannedSegment[] {
   let start = 0;
 
   while (start < durationSeconds - 0.001) {
-    const duration = Math.min(SEGMENT_DURATION, durationSeconds - start);
+    const pas = segments.length < PRIMER_COUNT ? PRIMER_DURATION : SEGMENT_DURATION;
+    const duration = Math.min(pas, durationSeconds - start);
     segments.push({ index: segments.length, start: round(start), duration: round(duration) });
-    start += SEGMENT_DURATION;
+    start += pas;
   }
 
   return segments;
+}
+
+/**
+ * Combien de segments de tête forment l'AMORCE dans ce plan — 0 s'il n'y en a pas.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * POURQUOI UN TEST EXACT, ET SURTOUT PAS « LE PREMIER EST PLUS COURT ».
+ *
+ * `planRuns` a d'abord déduit ses exécutions en regroupant les segments de même
+ * durée. Élégant, et faux : le REMUX ne passe pas par `planSegments` mais par
+ * l'énumération des images clés, dont les durées sont IRRÉGULIÈRES. Un fichier
+ * dont le premier segment tombe à 3,8 s aurait alors été découpé en deux
+ * exécutions, la première avec `-hls_time 3.8` — un découpage que personne n'a
+ * demandé, sur le chemin où la vidéo est copiée et où ffmpeg ne peut couper
+ * qu'aux images clés existantes.
+ *
+ * Le fichier qui a servi de témoin ne l'a pas montré : ses images clés tombent
+ * exactement toutes les quatre secondes, donc rien ne se déclenchait. Le défaut
+ * n'attendait qu'un encodage à GOP variable.
+ *
+ * On compte donc les segments de tête dont la durée vaut EXACTEMENT
+ * `PRIMER_DURATION`, au plus `PRIMER_COUNT`. Un plan irrégulier rend zéro dès
+ * son premier segment et garde son exécution unique.
+ *
+ * Le compte peut être inférieur à `PRIMER_COUNT` — un fichier de cinq secondes
+ * donne 0-2, 2-4, 4-5, donc deux segments d'amorce et une queue tronquée. C'est
+ * `planRuns` qui en tire les exécutions ; ici on ne fait que lire la grille.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export function primerSegments(plan: PlannedSegment[]): number {
+  let n = 0;
+  while (n < PRIMER_COUNT && plan[n]?.duration === PRIMER_DURATION) n += 1;
+  return n;
 }
 
 /** Trois décimales : la précision d'un EXTINF, sans bruit de virgule flottante. */

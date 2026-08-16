@@ -70,10 +70,22 @@ describe('bitrateFor', () => {
 describe('outputGeometry', () => {
   const vaapi = { hardware: 'vaapi' as const };
 
-  it('transporte la 4K INTACTE quand le HDR passe sans conversion', () => {
+  it('garde le HDR mais RÉDUIT à 1080p, comme le reste', () => {
+    /*
+     * Il ne réduisait pas, au nom du « ne rien perdre ». La marge de tampon
+     * après un déplacement l'a contredit : moins de 5 s en 4K contre des
+     * dizaines de secondes en 1080p, parce que l'encodeur tient ~1,7× le temps
+     * réel au lieu de ~5×. Ce qui compte — 10 bits, PQ, BT.2020 — est dans le
+     * CODEC et les métadonnées, pas dans le nombre de pixels.
+     */
     const g = outputGeometry({ sourceWidth: 3840, sourceHeight: 2160, ...vaapi, hdrPassthrough: true });
     expect(g.passthrough).toBe(true);
-    expect(g).toMatchObject({ width: 3840, height: 2160, bitrate: HDR_PASSTHROUGH_BITRATE });
+    expect(g).toMatchObject({ width: 1920, height: 1080, bitrate: HDR_PASSTHROUGH_BITRATE });
+  });
+
+  it('n’agrandit pas une source HDR déjà sous 1080p', () => {
+    const g = outputGeometry({ sourceWidth: 1280, sourceHeight: 720, ...vaapi, hdrPassthrough: true });
+    expect(g).toMatchObject({ width: 1280, height: 720 });
   });
 
   it('réduit à 1080p et à son débit sans le transport HDR', () => {

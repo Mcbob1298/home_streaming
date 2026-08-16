@@ -14,7 +14,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 import { bridageArgs } from './debit.js';
-import { AUDIO_SAMPLE_RATE, INIT_FILE_NAME, SEGMENT_PATTERN } from './segments.js';
+import { AUDIO_SAMPLE_RATE, INIT_FILE_NAME, SEGMENT_PATTERN, primerSegments } from './segments.js';
 
 /**
  * Quelle piste audio cette exécution produit, et avec combien de canaux.
@@ -379,28 +379,34 @@ export function buildAudioArgs(options: AudioRunOptions): string[] {
 }
 
 /**
- * UNE exécution ffmpeg par départ. Jamais deux.
+ * LES EXÉCUTIONS D'UN DÉPART, DÉDUITES DU PLAN LUI-MÊME.
  *
  * ═════════════════════════════════════════════════════════════════════════════
- * CETTE FONCTION RENDAIT DEUX EXÉCUTIONS, ET C'ÉTAIT LA RACINE D'UN DÉFAUT.
+ * ELLE N'EN RENDAIT QU'UNE, ET C'ÉTAIT LA CICATRICE D'UN DÉFAUT RÉGLÉ AILLEURS.
  *
- * Elle enchaînait une amorce de trois segments courts puis la croisière, parce
- * qu'une exécution ffmpeg ne sait pas changer de durée de segment en cours de
- * route. Mais la seconde exécution part d'une position non nulle, donc porte
- * `-output_ts_offset`, donc écrit un en-tête fMP4 DIFFÉRENT de la première.
+ * Elle enchaînait autrefois une amorce de trois segments courts puis la
+ * croisière — une exécution ffmpeg ne sachant pas changer de durée de segment en
+ * cours de route. La seconde partait d'une position non nulle, donc portait
+ * `-output_ts_offset`, donc écrivait un en-tête fMP4 DIFFÉRENT de la première ;
+ * le lecteur n'en recevant qu'un, le film perdait ses six premières secondes.
  *
- * Le lecteur, lui, ne reçoit qu'un en-tête. Les segments de la seconde
- * exécution étaient donc lus avec celui de la première, et le film perdait ses
- * six premières secondes.
- *
- * Une exécution unique rend la divergence impossible. Le démarrage rapide est
- * assuré autrement — par le prélude, qui sert des fichiers déjà encodés.
+ * `-output_ts_offset` a disparu depuis, pour une raison sans rapport. Les trois
+ * en-têtes ont été comparés octet à octet avec le ffmpeg de production — durées
+ * de segment et positions de départ mélangées, tous identiques. La divergence
+ * n'est plus possible, et l'enchaînement redevient légitime. Le détail de la
+ * mesure est en tête de `segments.ts`.
  * ═════════════════════════════════════════════════════════════════════════════
  *
- * La fonction est conservée plutôt que supprimée : elle rend un TABLEAU, et
- * c'est ce tableau que la session enchaîne. Le jour où une raison légitime
- * demandera plusieurs exécutions, elle devra d'abord régler la question de
- * l'en-tête.
+ * ─────────────────────────────────────────────────────────────────────────────
+ * LA DÉCOUPE EN EXÉCUTIONS SE LIT DANS LE PLAN, ELLE N'EST PAS RECALCULÉE.
+ *
+ * On regroupe les segments consécutifs de MÊME durée, et chaque groupe devient
+ * une exécution. Aucune constante d'amorce n'apparaît donc ici : le plan porte
+ * déjà sa grille, et l'audio — uniforme — obtient naturellement une exécution
+ * unique sans qu'on ait à le distinguer. Une deuxième définition de l'amorce
+ * dans ce fichier finirait par diverger de celle de `segments.ts` ; c'est
+ * exactement ce que `passthrough.ts` et `outputGeometry` ont déjà coûté.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 export interface RunPlan {
   startTime: number;
@@ -414,8 +420,44 @@ export function planRuns(
   plan: { index: number; start: number; duration: number }[],
   segmentDuration: number,
 ): RunPlan[] {
-  const first = plan[startIndex];
-  if (first === undefined) return [];
+  const premier = plan[startIndex];
+  if (premier === undefined) return [];
 
-  return [{ startTime: first.start, startNumber: startIndex, segmentDuration, endTime: null }];
+  /*
+   * `primerSegments` rend 0 dès que le plan n'a pas la forme EXACTE de l'amorce
+   * — un plan issu des images clés, un fichier plus court qu'elle, ou tout
+   * simplement le reste du film. Une exécution unique reste donc le cas de très
+   * loin le plus fréquent : tout déplacement au-delà de la sixième seconde.
+   */
+  const amorce = primerSegments(plan);
+  const frontiere = plan[amorce];
+
+  // Au-delà de l'amorce — tout déplacement, donc — une seule exécution.
+  if (startIndex >= amorce) {
+    return [{ startTime: premier.start, startNumber: startIndex, segmentDuration, endTime: null }];
+  }
+
+  /*
+   * Rien derrière l'amorce : le fichier tient tout entier dedans. Une seule
+   * exécution, mais à la durée de l'AMORCE — lui donner celle de croisière
+   * produirait un segment de quatre secondes là où le manifeste en annonce deux
+   * de deux.
+   */
+  if (frontiere === undefined) {
+    return [
+      { startTime: premier.start, startNumber: startIndex, segmentDuration: premier.duration, endTime: null },
+    ];
+  }
+
+  return [
+    // L'amorce s'arrête d'elle-même — c'est `-t` qui la borne — puis rend la
+    // main. Sa durée vient du plan, jamais d'une constante recopiée ici.
+    {
+      startTime: premier.start,
+      startNumber: startIndex,
+      segmentDuration: premier.duration,
+      endTime: frontiere.start,
+    },
+    { startTime: frontiere.start, startNumber: amorce, segmentDuration, endTime: null },
+  ];
 }
