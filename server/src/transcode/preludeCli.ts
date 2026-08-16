@@ -24,14 +24,7 @@ import { DATA_DIR, loadConfig, loadEnvFile, PRELUDE_DIR, resolveDatabasePath } f
 import { openDatabase } from '../db/index.js';
 import { detectCapabilities } from './capabilities.js';
 import { supportedBackend } from './encode.js';
-import { fabriquerPrelude } from './fabriquePrelude.js';
-
-function readFileId(argv: string[]): number | null {
-  const index = argv.indexOf('--file');
-  if (index === -1) return null;
-  const value = Number(argv[index + 1]);
-  return Number.isSafeInteger(value) && value > 0 ? value : null;
-}
+import { fabriquerPrelude, lireIntention } from './fabriquePrelude.js';
 
 function octets(n: number): string {
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)} Go`;
@@ -41,9 +34,15 @@ function octets(n: number): string {
 
 async function main(): Promise<void> {
   loadEnvFile();
-  const fileId = readFileId(process.argv.slice(2));
-  if (fileId === null) {
-    console.error('Usage : npm run prelude -- --file <mediaFileId> [--sdr]');
+
+  /*
+   * Les trois intentions viennent d'une SEULE lecture des arguments, partagée
+   * avec la commande au pluriel. C'est `--dry` qui se perdait ici : reconnu dans
+   * la documentation, jamais transporté jusqu'à la fabrique.
+   */
+  const intention = lireIntention(process.argv.slice(2));
+  if (intention.fileId === null) {
+    console.error('Usage : npm run prelude -- --file <mediaFileId> [--sdr] [--dry]');
     process.exit(1);
   }
 
@@ -54,12 +53,13 @@ async function main(): Promise<void> {
 
   const resultat = await fabriquerPrelude({
     db,
-    id: fileId,
+    id: intention.fileId,
     config,
     capabilities,
     backend,
     preludeRoot: PRELUDE_DIR,
-    pourClientSdr: process.argv.includes('--sdr'),
+    pourClientSdr: intention.pourClientSdr,
+    simulation: intention.simulation,
     onProgress: (message) => console.log(`  ${message}`),
   });
 

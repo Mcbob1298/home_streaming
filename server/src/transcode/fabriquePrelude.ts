@@ -64,6 +64,41 @@ async function elaguer(dir: string, garder: number): Promise<void> {
   }
 }
 
+/**
+ * Les arguments, traduits en intentions — et testables sans lancer la commande.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════
+ * POURQUOI CETTE FONCTION EXISTE SÉPARÉMENT DE `main`.
+ *
+ * `--dry` était reconnu dans la documentation de la commande et nulle part
+ * ailleurs : `main` ne le transportait pas jusqu'à `fabriquerPrelude`. La
+ * commande annonçait une simulation et encodait. Sur Avatar le défaut restait
+ * invisible — son prélude étant déjà valable, la fonction sortait AVANT
+ * d'atteindre la question — mais sur les soixante-neuf autres fichiers HDR10,
+ * `--dry` aurait produit vingt secondes d'encodage chacun.
+ *
+ * Un `main` n'est pas testable : il lit `process.argv`, ouvre une base et
+ * termine le processus. La traduction des arguments, elle, est une fonction
+ * pure — donc vérifiable, donc vérifiée.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+export interface IntentionPrelude {
+  fileId: number | null;
+  pourClientSdr: boolean;
+  simulation: boolean;
+}
+
+export function lireIntention(argv: string[]): IntentionPrelude {
+  const index = argv.indexOf('--file');
+  const value = index === -1 ? Number.NaN : Number(argv[index + 1]);
+
+  return {
+    fileId: Number.isSafeInteger(value) && value > 0 ? value : null,
+    pourClientSdr: argv.includes('--sdr'),
+    simulation: argv.includes('--dry'),
+  };
+}
+
 export interface OptionsFabrication {
   db: Db;
   id: number;
@@ -73,8 +108,16 @@ export interface OptionsFabrication {
   preludeRoot: string;
   /** Fabriquer la variante tone-mappée plutôt que celle du client capable. */
   pourClientSdr: boolean;
-  /** Ne rien encoder : dire seulement ce qui serait fait. */
-  simulation?: boolean;
+  /**
+   * Ne rien encoder : dire seulement ce qui serait fait.
+   *
+   * OBLIGATOIRE, et c'est la correction. Le champ était optionnel, et le point
+   * d'entrée au singulier l'omettait : sa commande annonçait une simulation et
+   * encodait. Un champ optionnel se perd en silence entre deux couches — c'est
+   * la troisième fois de suite dans ce dépôt. Requis, l'oubli devient une
+   * erreur de compilation, pas une découverte en production.
+   */
+  simulation: boolean;
   /** Progression, pour la commande unitaire qui l'affiche. */
   onProgress?: (message: string) => void;
 }
@@ -173,7 +216,7 @@ export async function fabriquerPrelude(o: OptionsFabrication): Promise<ResultatP
     return { etat: 'deja-valable', nom };
   }
 
-  if (o.simulation === true) return { etat: 'simule', nom };
+  if (o.simulation) return { etat: 'simule', nom };
 
   await rm(staging, { recursive: true, force: true }).catch(() => undefined);
   await mkdir(staging, { recursive: true });
